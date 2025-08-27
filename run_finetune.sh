@@ -73,7 +73,24 @@ fi
 # Train                     #
 #############################
 echo "[*] Starting fine-tune run"
-python finetune_opt_checkpoint.py \
+# python finetune_opt_checkpoint.py \
+#   --model "$MODEL_ID" \
+#   --seed "$SEED" \
+#   --epochs "$EPOCHS" \
+#   --seq_len "$SEQ_LEN" \
+#   --per_device_batch "$PER_DEV_BATCH" \
+#   --grad_accum "$GRAD_ACCUM" \
+#   --lr 2e-5 \
+#   --wd 0.05 \
+#   --warmup_ratio 0.03 \
+#   --unfreeze_n "$UNFREEZE_N" \
+#   --targets "$TARGETS" \
+#   --max_train_samples "$MAX_TRAIN_SAMPLES" \
+#   --log_every "$LOG_EVERY" \
+#   --snap_every "$SNAP_EVERY" \
+#   --outdir "$OUTDIR"
+
+torchrun --standalone --nproc_per_node=8 finetune_opt_checkpoint.py \
   --model "$MODEL_ID" \
   --seed "$SEED" \
   --epochs "$EPOCHS" \
