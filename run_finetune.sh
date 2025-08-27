@@ -1,4 +1,4 @@
-python finetune_opt13b_hotcold.py \
+python finetune_opt_checkpoint.py \
   --model facebook/opt-13b \
   --epochs 1 \
   --seq_len 2048 \
