@@ -1,0 +1,11 @@
+python finetune_opt13b_hotcold.py \
+  --model facebook/opt-13b \
+  --epochs 1 \
+  --seq_len 2048 \
+  --per_device_batch 1 \
+  --grad_accum 8 \
+  --unfreeze_n 12 \
+  --targets mlp,mha \
+  --max_train_samples 2000 \
+  --log_every 50 --snap_every 200 \
+  --outdir runs/opt13b_hotcold
