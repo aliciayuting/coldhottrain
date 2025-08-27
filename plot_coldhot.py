@@ -1,98 +1,109 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Plot hot/cold diagnostics from snapshot .npz files produced by finetune_opt_checkpoint.py
+Plot hot/cold neuron snapshots produced by finetune_opt_checkpoint.py.
 
-Creates:
-  - heat_grad_g{g}.png       : |grad| EMA heatmap per group
-  - heat_selectivity.png     : S = (G0-G1)/(G0+G1) heatmap
-  - hot_fraction_layer.png   : fraction of hot neurons per layer (fixed tau & percentile)
-  - grad_hist_group0.png     : histogram (log scale) of |grad| EMA for group 0
+Usage:
+  python plot_coldhot.py --dir runs/opt13b_hotcold
+  python plot_coldhot.py --dir runs/opt13b_hotcold --step 0000200 --tau 1e-5 --g0 0 --g1 1
 
-Quick use:
-  python plot_hotcold.py --dir runs/opt13b_hotcold --g0 0 --g1 1 --tau 1e-5
+Outputs:
+  - <outdir>/plots/heatmap_G_group{g}_step{step}.png
+  - <outdir>/plots/heatmap_A_group{g}_step{step}.png   (if --plot_A)
+  - <outdir>/plots/hot_fraction_step{step}.png
 """
 
-import os, glob, numpy as np
+import os, re, argparse, glob
+import numpy as np
 import matplotlib.pyplot as plt
 
-def load_latest(npz_dir):
-    files = sorted(glob.glob(os.path.join(npz_dir, "hotcold_step*.npz")))
+def latest_step_tag(outdir: str):
+    files = sorted(glob.glob(os.path.join(outdir, "hotcold_step*.npz")))
     if not files:
-        raise FileNotFoundError(f"No snapshots found in {npz_dir}")
-    return files[-1]
+        raise FileNotFoundError(f"No snapshots found under {outdir}")
+    m = re.search(r"hotcold_step(\d+)\.npz$", files[-1])
+    if not m:
+        raise RuntimeError("Could not parse step from last file name.")
+    return m.group(1)
 
-def plot_heat(mat, title, out_png):
-    plt.figure(figsize=(12,5))
-    plt.imshow(mat, aspect="auto", interpolation="nearest")
+def load_snapshot(outdir: str, step_tag: str):
+    path = os.path.join(outdir, f"hotcold_step{step_tag}.npz")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Snapshot not found: {path}")
+    return np.load(path, allow_pickle=True)
+
+def plot_heatmap(mat, title, path, vmin=None, vmax=None):
+    plt.figure(figsize=(10, 6))
+    plt.imshow(mat, aspect='auto', interpolation='nearest', vmin=vmin, vmax=vmax)
     plt.colorbar()
-    plt.xlabel("Neuron index")
-    plt.ylabel("Layer")
     plt.title(title)
+    plt.xlabel("Neurons")
+    plt.ylabel("Layers (top=0)")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     plt.tight_layout()
-    plt.savefig(out_png, dpi=150)
+    plt.savefig(path, dpi=200)
     plt.close()
 
-def main(npz_dir, g0=0, g1=1, tau=1e-5, perc=90):
-    path = load_latest(npz_dir)
-    snap = np.load(path, allow_pickle=True)
-    G = snap["G"]  # object array of length groups
-    layers = int(snap["layers"].item())
-    neurons = int(snap["neurons"].item())
-    groups = int(snap["groups"].item())
-    step = int(snap["step"].item())
-    print(f"Loaded {path}  step={step}  layers={layers}  neurons={neurons}  groups={groups}")
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", required=True, help="directory with hotcold_step*.npz")
+    ap.add_argument("--step", default=None, help="7-digit step tag; if omitted, use the latest")
+    ap.add_argument("--tau", type=float, default=1e-5, help="hot threshold for H or G comparison")
+    ap.add_argument("--g0", type=int, default=0, help="first group index")
+    ap.add_argument("--g1", type=int, default=1, help="second group index")
+    ap.add_argument("--plot_A", action="store_true", help="also plot activation EMA heatmaps")
+    args = ap.parse_args()
 
-    # 1) Per-group |grad| heatmaps
-    for gi in range(groups):
-        Gi = G[gi]
-        plot_heat(Gi, f"|grad| EMA (group {gi})", os.path.join(npz_dir, f"heat_grad_g{gi}.png"))
+    step_tag = args.step or latest_step_tag(args.dir)
+    snap = load_snapshot(args.dir, step_tag)
 
-    # 2) Selectivity S
-    if groups >= 2:
-        G0, G1 = G[g0], G[g1]
-        S = (G0 - G1) / (G0 + G1 + 1e-8)
-        plot_heat(S, f"Selectivity S (group {g0} vs {g1})", os.path.join(npz_dir, "heat_selectivity.png"))
+    layers   = int(snap["layers"])
+    neurons  = int(snap["neurons"])
+    groups   = int(snap["groups"])
+    G_list   = [snap["G"][i] for i in range(groups)]
+    H_list   = [snap["H"][i] for i in range(groups)]
+    A_list   = [snap["A"][i] for i in range(groups)]
 
-    # 3) Hot fraction per layer (group g0)
-    Gg = G[g0]
-    hot_frac_tau = (Gg > tau).mean(axis=1)  # fixed threshold
-    thr = np.percentile(Gg, perc)
-    hot_frac_p = (Gg > thr).mean(axis=1)    # percentile threshold
+    plots_dir = os.path.join(args.dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
 
-    x = np.arange(layers)
-    plt.figure()
-    plt.plot(x, hot_frac_tau, label=f"hot frac (> {tau:g})")
-    plt.plot(x, hot_frac_p, label=f"hot frac (> p{perc})")
-    plt.xlabel("Layer"); plt.ylabel("Fraction of hot neurons")
-    plt.title(f"Hot fraction per layer (group {g0})")
-    plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(npz_dir, "hot_fraction_layer.png"), dpi=150)
-    plt.close()
+    # Heatmaps for G
+    for g in range(groups):
+        G = G_list[g]
+        plot_heatmap(
+            G,
+            title=f"G (EMA |grad|), group {g}, step {int(snap['step'])}",
+            path=os.path.join(plots_dir, f"heatmap_G_group{g}_step{step_tag}.png"),
+            vmin=None, vmax=None
+        )
 
-    # 4) Distribution snapshot
-    plt.figure()
-    flat = Gg.flatten()
-    plt.hist(flat, bins=100, log=True)
-    plt.xlabel("|grad| EMA (group {g0})"); plt.ylabel("count (log)")
-    plt.title("Per-neuron |grad| distribution")
+    # Optional heatmaps for A
+    if args.plot_A:
+        for g in range(groups):
+            A = A_list[g]
+            plot_heatmap(
+                A,
+                title=f"A (EMA ReLU act), group {g}, step {int(snap['step'])}",
+                path=os.path.join(plots_dir, f"heatmap_A_group{g}_step{step_tag}.png"),
+                vmin=None, vmax=None
+            )
+
+    # Hot fraction per layer for each group (using G > tau as proxy)
+    plt.figure(figsize=(10, 4))
+    for g in range(groups):
+        G = G_list[g]
+        hot = (G > args.tau).astype(np.float32)
+        frac = hot.mean(axis=1)  # per-layer fraction of hot neurons
+        plt.plot(np.arange(layers), frac, label=f"group {g}")
+    plt.xlabel("Layer")
+    plt.ylabel(f"Frac hot (G > {args.tau:g})")
+    plt.title(f"Hot neuron fraction per layer @ step {int(snap['step'])}")
+    plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(npz_dir, "grad_hist_group0.png"), dpi=150)
-    plt.close()
+    out_path = os.path.join(plots_dir, f"hot_fraction_step{step_tag}.png")
+    plt.savefig(out_path, dpi=200); plt.close()
 
-    print("Wrote plots to:", npz_dir)
-    print("\nDecision guide:")
-    print("• Heavy-tailed histogram + small hot fraction (e.g., ≤10–20%) ⇒ hot/cold exists.")
-    print("• Selectivity heatmap with clear ± regions ⇒ groups specialize different neurons.")
-    print("• Layerwise patterns (ridges) often strengthen in later layers.")
+    print(f"✓ Wrote plots to {plots_dir}")
 
 if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", required=True, help="snapshot directory")
-    ap.add_argument("--g0", type=int, default=0)
-    ap.add_argument("--g1", type=int, default=1)
-    ap.add_argument("--tau", type=float, default=1e-5)
-    ap.add_argument("--perc", type=int, default=90)
-    args = ap.parse_args()
-    main(args.dir, args.g0, args.g1, args.tau, args.perc)
+    main()
