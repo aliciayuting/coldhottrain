@@ -1,7 +1,25 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+"""
+Fine-tune OPT-13B on GSM8K and checkpoint per-neuron hot/cold stats.
+Writes compressed .npz snapshots containing:
+  - G[g]: EMA of |grad| per neuron (fc1 rows), shape [layers, neurons]
+  - H[g]: hit counts (> threshold), same shape
+  - A[g]: EMA of activations ReLU(fc1(x)), same shape
 
-import os, re, math, argparse, json, random
+Usage (single node, multiple GPUs OK):
+  python finetune_opt_checkpoint.py --model facebook/opt-13b --epochs 1 \
+    --seq_len 2048 --per_device_batch 1 --grad_accum 8 \
+    --unfreeze_n 12 --targets mlp,mha \
+    --max_train_samples 2000 \
+    --log_every 50 --snap_every 200 \
+    --outdir runs/opt13b_hotcold
+
+Dependencies:
+  python 3.10, torch 2.2/2.3, transformers >= 4.40, datasets, tqdm, numpy, matplotlib (for later plotting)
+"""
+
+import os, re, math, argparse, random
 from typing import List, Tuple
 
 import numpy as np
@@ -17,7 +35,7 @@ from transformers import (
 from tqdm import tqdm
 
 # -------------------------
-# Utilities
+# Helpers
 # -------------------------
 def set_seed(seed: int):
     random.seed(seed)
@@ -25,23 +43,18 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-def is_dist():
-    return dist.is_available() and dist.is_initialized()
-
-def get_rank():
-    return dist.get_rank() if is_dist() else 0
-
-def is_main():
-    return get_rank() == 0
+def is_dist(): return dist.is_available() and dist.is_initialized()
+def rank():    return dist.get_rank() if is_dist() else 0
+def is_main(): return rank() == 0
 
 # -------------------------
-# Data
+# Data: GSM8K (train) + simple 2-way grouping
 # -------------------------
 def extract_gsm_answer_tail(ans: str) -> str:
     return ans.split("####")[-1].strip() if "####" in ans else ans.strip()
 
-def simple_group_gsm(q: str) -> int:
-    # Group 0: arithmetic/rates/percent; Group 1: other
+def group_gsm_question(q: str) -> int:
+    # Group 0: arithmetic/rate/percent-ish; Group 1: other
     kw = [
         "sum","add","+","minus","-","*","times","product","difference",
         "minutes","hours","speed","rate","percent","percentage","discount",
@@ -53,7 +66,7 @@ def simple_group_gsm(q: str) -> int:
 def build_text(q: str, a: str) -> str:
     return f"Question:\n{q}\n\nAnswer:\n{a}\n"
 
-def load_gsm8k(max_train_samples: int = 0, seed: int = 42):
+def load_gsm8k_examples(max_train_samples: int = 0, seed: int = 42):
     ds = load_dataset("openai/gsm8k", "main")
     train = ds["train"]
     if max_train_samples:
@@ -62,13 +75,10 @@ def load_gsm8k(max_train_samples: int = 0, seed: int = 42):
     for ex in train:
         q = ex["question"].strip()
         a = extract_gsm_answer_tail(ex["answer"])
-        grp = simple_group_gsm(q)   # 0 or 1
+        grp = group_gsm_question(q)   # 0 or 1
         examples.append({"text": build_text(q, a), "group": grp})
     return examples
 
-# -------------------------
-# Collate
-# -------------------------
 def make_collate_fn(tokenizer, max_seq_len: int):
     eos = tokenizer.eos_token or tokenizer.pad_token
     def collate(batch):
@@ -83,65 +93,40 @@ def make_collate_fn(tokenizer, max_seq_len: int):
     return collate
 
 # -------------------------
-# Model surgery (OPT-13B)
+# OPT-13B module discovery & unfreeze
 # -------------------------
-def discover_opt_ffn_fc1(model: nn.Module) -> List[Tuple[int,str,nn.Linear]]:
-    """
-    Find OPT decoder FFN fc1 modules.
-    Returns list of (layer_idx, name, module).
-    """
+def discover_opt_fc1(model: nn.Module) -> List[Tuple[int,str,nn.Linear]]:
     fc1_modules = []
     for name, mod in model.named_modules():
         if isinstance(mod, nn.Linear):
             m = re.match(r"model\.decoder\.layers\.(\d+)\.fc1$", name)
             if m:
-                lid = int(m.group(1))
-                fc1_modules.append((lid, name, mod))
+                fc1_modules.append((int(m.group(1)), name, mod))
     fc1_modules.sort(key=lambda x: x[0])
     return fc1_modules
 
-def discover_opt_attention_projs(model: nn.Module):
-    """Return dict layer_idx -> list of (name, module) for attention {q,k,v,o}_proj."""
-    out = {}
-    for name, mod in model.named_modules():
-        if isinstance(mod, nn.Linear):
-            m = re.match(r"model\.decoder\.layers\.(\d+)\.(self_attn\.(q_proj|k_proj|v_proj|out_proj))$", name)
-            if m:
-                lid = int(m.group(1))
-                out.setdefault(lid, []).append((name, mod))
-    return out
-
-def freeze_all(model: nn.Module):
-    for p in model.parameters():
+def freeze_all(m: nn.Module):
+    for p in m.parameters():
         p.requires_grad_(False)
 
-def unfreeze_last_n(model: nn.Module, targets: str, last_n: int):
-    """
-    targets: "mlp", "mha", or "mha,mlp"
-    last_n: last N decoder layers
-    """
+def unfreeze_last_n(m: nn.Module, targets: str, last_n: int):
     want_mlp = "mlp" in targets
     want_mha = "mha" in targets
 
-    # OPT layers total:
-    # discover total from module names
+    # find number of layers
     max_layer = -1
-    for name, _ in model.named_modules():
-        m = re.match(r"model\.decoder\.layers\.(\d+)", name)
-        if m:
-            max_layer = max(max_layer, int(m.group(1)))
+    for name, _ in m.named_modules():
+        mm = re.match(r"model\.decoder\.layers\.(\d+)", name)
+        if mm: max_layer = max(max_layer, int(mm.group(1)))
     total_layers = max_layer + 1
-
     low = max(0, total_layers - last_n)
-    hi = total_layers
+    hi  = total_layers
 
-    for name, mod in model.named_modules():
-        m = re.match(r"model\.decoder\.layers\.(\d+)\.(.*)$", name)
-        if not m:
-            continue
-        lid = int(m.group(1))
-        if not (low <= lid < hi):
-            continue
+    for name, mod in m.named_modules():
+        mm = re.match(r"model\.decoder\.layers\.(\d+)\.(.*)$", name)
+        if not mm: continue
+        lid = int(mm.group(1))
+        if not (low <= lid < hi): continue
         if want_mlp and (name.endswith(".fc1") or name.endswith(".fc2")):
             if isinstance(mod, nn.Linear):
                 if mod.weight is not None: mod.weight.requires_grad_(True)
@@ -152,23 +137,18 @@ def unfreeze_last_n(model: nn.Module, targets: str, last_n: int):
                 if mod.bias   is not None: mod.bias.requires_grad_(True)
 
 # -------------------------
-# Hot/Cold logging hooks
+# Hot/Cold logger (per-neuron stats)
 # -------------------------
 class HotColdLogger:
-    """
-    Tracks per-group, per-layer, per-neuron (fc1 rows) gradient L1 EMA,
-    hit counts, and optional activation EMA (ReLU(fc1(x))).
-    """
     def __init__(self, model, groups: int, ema_alpha: float,
-                 hit_t: float, act_ema_alpha: float,
-                 outdir: str):
+                 hit_t: float, act_ema_alpha: float, outdir: str):
         self.groups = groups
         self.ema_alpha = ema_alpha
         self.hit_t = hit_t
         self.act_ema_alpha = act_ema_alpha
         self.outdir = outdir
 
-        self.fc1_modules = discover_opt_ffn_fc1(model)
+        self.fc1_modules = discover_opt_fc1(model)
         assert self.fc1_modules, "No OPT fc1 modules found."
         self.num_layers = self.fc1_modules[-1][0] + 1
         self.neurons = self.fc1_modules[0][2].out_features
@@ -176,31 +156,26 @@ class HotColdLogger:
             assert m.out_features == self.neurons, "Varying FFN sizes not supported."
 
         device = next(model.parameters()).device
-        # Accumulators (on device for speed; we all-reduce in-place)
         self.G = [torch.zeros((self.num_layers, self.neurons), dtype=torch.float32, device=device)
                   for _ in range(groups)]
-        self.H = [torch.zeros((self.num_layers, self.neurons), dtype=torch.int32, device=device)
+        self.H = [torch.zeros((self.num_layers, self.neurons), dtype=torch.int32,   device=device)
                   for _ in range(groups)]
         self.A = [torch.zeros((self.num_layers, self.neurons), dtype=torch.float32, device=device)
                   for _ in range(groups)]
 
-        # "current group" per microbatch
         self._curr_group = torch.tensor(0, device=device)
 
-        # Register hooks
+        # Register gradient & forward hooks
         for lid, _, mod in self.fc1_modules:
             mod.weight.register_hook(self._make_grad_hook(lid))
             mod.register_forward_hook(self._make_forward_hook(lid))
 
-    def set_group(self, g: int):
-        self._curr_group.fill_(int(g))
-
-    def get_group(self) -> int:
-        return int(self._curr_group.item())
+    def set_group(self, g: int): self._curr_group.fill_(int(g))
+    def get_group(self) -> int:  return int(self._curr_group.item())
 
     def _make_grad_hook(self, layer_idx: int):
         def _hook(grad: torch.Tensor):
-            # grad: [out_features, in_features]
+            # grad shape: [out_features, in_features]
             with torch.no_grad():
                 g = self.get_group()
                 row = grad.abs().mean(dim=1).to(torch.float32)  # [neurons]
@@ -210,39 +185,34 @@ class HotColdLogger:
 
     def _make_forward_hook(self, layer_idx: int):
         def _fwd(module, inp, out):
-            # out is fc1(x); apply ReLU to mirror OPT FFN
+            # out is fc1(x); apply ReLU to mirror OPT’s FFN
             with torch.no_grad():
                 g = self.get_group()
                 y = torch.relu(out)
-                if y.dim() == 3:
-                    row = y.abs().mean(dim=(0,1)).to(torch.float32)  # [H]
-                else:
-                    row = y.abs().mean(dim=0).to(torch.float32)      # [H]
+                if y.dim() == 3:  # [B,T,H]
+                    row = y.abs().mean(dim=(0,1)).to(torch.float32)
+                else:             # [*,H]
+                    row = y.abs().mean(dim=0).to(torch.float32)
                 self.A[g][layer_idx].mul_(1 - self.act_ema_alpha).add_(self.act_ema_alpha * row)
         return _fwd
 
     def reduce_stats(self):
-        if not is_dist():
-            return
+        if not is_dist(): return
         for g in range(self.groups):
             dist.all_reduce(self.G[g], op=dist.ReduceOp.SUM)
             dist.all_reduce(self.H[g], op=dist.ReduceOp.SUM)
             dist.all_reduce(self.A[g], op=dist.ReduceOp.SUM)
 
     def save_snapshot(self, step: int):
-        if not is_main():
-            return
-        snap = {
-            "step": step,
-            "layers": self.num_layers,
-            "neurons": self.neurons,
-            "groups": self.groups,
-            "G": [t.detach().cpu().numpy() for t in self.G],
-            "H": [t.detach().cpu().numpy() for t in self.H],
-            "A": [t.detach().cpu().numpy() for t in self.A],
-        }
+        if not is_main(): return
         os.makedirs(self.outdir, exist_ok=True)
-        np.savez_compressed(os.path.join(self.outdir, f"hotcold_step{step:07d}.npz"), **snap)
+        np.savez_compressed(
+            os.path.join(self.outdir, f"hotcold_step{step:07d}.npz"),
+            step=step, layers=self.num_layers, neurons=self.neurons, groups=self.groups,
+            G=[t.detach().cpu().numpy() for t in self.G],
+            H=[t.detach().cpu().numpy() for t in self.H],
+            A=[t.detach().cpu().numpy() for t in self.A],
+        )
 
 # -------------------------
 # Main
@@ -250,7 +220,7 @@ class HotColdLogger:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", type=str, default="facebook/opt-13b",
-                    help="HF model id; default is OPT-13B (ReLU FFN)")
+                    help="HF model id; default OPT-13B (ReLU FFN)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--seq_len", type=int, default=2048)
@@ -261,37 +231,32 @@ def main():
     ap.add_argument("--warmup_ratio", type=float, default=0.03)
     ap.add_argument("--log_every", type=int, default=50)
     ap.add_argument("--snap_every", type=int, default=200)
-    ap.add_argument("--max_train_samples", type=int, default=2000,
-                    help="Subset GSM8K for a quick run; set 0 to use all")
+    ap.add_argument("--max_train_samples", type=int, default=2000)
     ap.add_argument("--outdir", type=str, default="runs/opt13b_hotcold")
-    ap.add_argument("--groups", type=int, default=2, help="number of groups (we use 2 for GSM8K)")
+    ap.add_argument("--groups", type=int, default=2)
     ap.add_argument("--ema_alpha", type=float, default=0.1)
     ap.add_argument("--hit_t", type=float, default=1e-5)
     ap.add_argument("--act_ema_alpha", type=float, default=0.1)
-    ap.add_argument("--unfreeze_scope", type=str, default="last_n_layers",
-                    choices=["last_n_layers"])
-    ap.add_argument("--unfreeze_n", type=int, default=12)
+    ap.add_argument("--unfreeze_n", type=int, default=12,
+                    help="unfreeze last N decoder layers")
     ap.add_argument("--targets", type=str, default="mlp,mha",
-                    help="comma list: mlp, mha")
+                    help="comma list among: mlp, mha")
     args = ap.parse_args()
 
     set_seed(args.seed)
 
-    # Distributed init if launched with torchrun
+    # Initialize distributed if launched via torchrun/sbatch
     if "RANK" in os.environ or "SLURM_PROCID" in os.environ:
         dist.init_process_group(backend="nccl")
 
     if is_main():
         os.makedirs(args.outdir, exist_ok=True)
-
-    # 1) Data (GSM8K train only for now)
-    if is_main():
         print("Loading GSM8K...")
-    examples = load_gsm8k(max_train_samples=args.max_train_samples, seed=args.seed)
 
+    # 1) Data
+    examples = load_gsm8k_examples(max_train_samples=args.max_train_samples, seed=args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
     collate = make_collate_fn(tokenizer, args.seq_len)
-    # Shard data manually for DDP if desired, but simplest is to rely on DataLoader shuffle
     loader = DataLoader(examples, batch_size=args.per_device_batch,
                         shuffle=True, collate_fn=collate, drop_last=False)
 
@@ -299,43 +264,36 @@ def main():
     if is_main():
         print(f"Loading model: {args.model} (bf16)")
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",           # shards across visible GPUs on a single node
+        args.model, torch_dtype=torch.bfloat16, device_map="auto"
     )
     model.gradient_checkpointing_enable()
 
-    # 3) Freeze all, then unfreeze last N layers of selected targets
+    # 3) Freeze all, then unfreeze last-N layers for requested targets
     freeze_all(model)
     unfreeze_last_n(model, targets=args.targets, last_n=args.unfreeze_n)
 
-    # 4) Optimizer/scheduler
+    # 4) Optimizer & schedule
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.95))
     total_steps = args.epochs * math.ceil(len(loader) / max(1, args.grad_accum))
-    warmup = max(10, int(total_steps * args.warmup_ratio))
-    scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup, num_training_steps=total_steps)
+    warmup_steps = max(10, int(total_steps * args.warmup_ratio))
+    scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
 
-    # 5) Hot/Cold Logger
+    # 5) Logger (hot/cold stats)
     logger = HotColdLogger(
-        model=model,
-        groups=args.groups,
-        ema_alpha=args.ema_alpha,
-        hit_t=args.hit_t,
-        act_ema_alpha=args.act_ema_alpha,
-        outdir=args.outdir
+        model=model, groups=args.groups, ema_alpha=args.ema_alpha,
+        hit_t=args.hit_t, act_ema_alpha=args.act_ema_alpha, outdir=args.outdir
     )
 
     device = next(model.parameters()).device
-    global_step = 0
     model.train()
+    global_step = 0
 
     for epoch in range(args.epochs):
         pbar = tqdm(enumerate(loader), total=len(loader), disable=not is_main(),
                     desc=f"Epoch {epoch+1}/{args.epochs}")
         for step, batch in pbar:
-            # single-group per microbatch (batch size often 1 for long seqs)
-            logger.set_group(int(batch["group"][0]))
+            logger.set_group(int(batch["group"][0]))  # one group per microbatch
 
             batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -362,8 +320,10 @@ def main():
             if is_main():
                 pbar.set_postfix({"loss": f"{out.loss.item():.4f}", "gs": global_step})
 
+    # Final snapshot no matter what
+    logger.save_snapshot(global_step)
     if is_main():
-        print("Done. Snapshots written to:", args.outdir)
+        print("Done. Snapshots in:", args.outdir)
 
 if __name__ == "__main__":
     main()
