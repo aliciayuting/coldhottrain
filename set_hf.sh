@@ -14,6 +14,6 @@ echo "Set HF_HOME to $HF_HOME"
 # Retrieve the primary group dynamically
 MYGROUP=$(id -gn)
 
-# Change ownership using the dynamically obtained group name
-sudo chown -R $USER:$MYGROUP "$SCRATCH/.huggingface_cache"
-echo "Added ${USER}:${MYGROUP} to $SCRATCH/.huggingface_cache"
+# # Change ownership using the dynamically obtained group name
+# sudo chown -R $USER:$MYGROUP "$SCRATCH/.huggingface_cache"
+# echo "Added ${USER}:${MYGROUP} to $SCRATCH/.huggingface_cache"
