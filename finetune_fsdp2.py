@@ -227,6 +227,12 @@ class HotColdLogger:
         self.A = [torch.zeros((self.num_layers, self.neurons), dtype=torch.float32, device=self._buffers_device)
                   for _ in range(groups)]
         self._curr_group = torch.tensor(0, device=self._buffers_device)
+
+        # Register hooks on fc1 immediately (before FSDP wrapping)
+        for lid, _, mod in self.fc1_modules:
+            if hasattr(mod, 'weight') and isinstance(mod.weight, torch.Tensor):
+                mod.weight.register_hook(self._make_grad_hook(lid))
+            mod.register_forward_hook(self._make_forward_hook(lid))
     def _ensure_device(self, device: torch.device):
         """Move internal EMA/Hit buffers to the given device exactly once."""
         if device == self._buffers_device:
@@ -239,12 +245,6 @@ class HotColdLogger:
             self.H[g] = self.H[g].to(device)
             self.A[g] = self.A[g].to(device)
         self._buffers_device = device
-
-        # Register hooks on fc1 before FSDP wrapping
-        for lid, _, mod in self.fc1_modules:
-            if hasattr(mod, 'weight') and isinstance(mod.weight, torch.Tensor):
-                mod.weight.register_hook(self._make_grad_hook(lid))
-            mod.register_forward_hook(self._make_forward_hook(lid))
 
     def set_group(self, g: int):
         self._curr_group.fill_(int(g))
@@ -280,6 +280,13 @@ class HotColdLogger:
     def reduce_stats(self):
         if not is_dist():
             return
+        # Ensure buffers are on CUDA for NCCL all_reduce (some ranks may not have fired hooks yet)
+        if self._buffers_device.type != "cuda":
+            try:
+                dev = torch.device(f"cuda:{local_rank()}")
+            except Exception:
+                dev = torch.device("cuda")
+            self._ensure_device(dev)
         for g in range(self.groups):
             dist.all_reduce(self.G[g], op=dist.ReduceOp.SUM)
             dist.all_reduce(self.H[g], op=dist.ReduceOp.SUM)
