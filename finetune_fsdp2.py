@@ -218,14 +218,27 @@ class HotColdLogger:
         for _, _, m in self.fc1_modules:
             assert m.out_features == self.neurons, "Varying FFN sizes not supported."
 
-        device = next(model.parameters()).device if any(True for _ in model.parameters()) else torch.device('cuda')
-        self.G = [torch.zeros((self.num_layers, self.neurons), dtype=torch.float32, device=device)
+        # Allocate on CPU first; move lazily on first hook call to match module's device
+        self._buffers_device = torch.device("cpu")
+        self.G = [torch.zeros((self.num_layers, self.neurons), dtype=torch.float32, device=self._buffers_device)
                   for _ in range(groups)]
-        self.H = [torch.zeros((self.num_layers, self.neurons), dtype=torch.int32,   device=device)
+        self.H = [torch.zeros((self.num_layers, self.neurons), dtype=torch.int32,   device=self._buffers_device)
                   for _ in range(groups)]
-        self.A = [torch.zeros((self.num_layers, self.neurons), dtype=torch.float32, device=device)
+        self.A = [torch.zeros((self.num_layers, self.neurons), dtype=torch.float32, device=self._buffers_device)
                   for _ in range(groups)]
-        self._curr_group = torch.tensor(0, device=device)
+        self._curr_group = torch.tensor(0, device=self._buffers_device)
+    def _ensure_device(self, device: torch.device):
+        """Move internal EMA/Hit buffers to the given device exactly once."""
+        if device == self._buffers_device:
+            return
+        # Move group selector
+        self._curr_group = self._curr_group.to(device)
+        # Move stats buffers
+        for g in range(self.groups):
+            self.G[g] = self.G[g].to(device)
+            self.H[g] = self.H[g].to(device)
+            self.A[g] = self.A[g].to(device)
+        self._buffers_device = device
 
         # Register hooks on fc1 before FSDP wrapping
         for lid, _, mod in self.fc1_modules:
@@ -242,6 +255,8 @@ class HotColdLogger:
     def _make_grad_hook(self, layer_idx: int):
         def _hook(grad: torch.Tensor):
             with torch.no_grad():
+                # Ensure buffers are on the grad's device (e.g., cuda:local_rank)
+                self._ensure_device(grad.device)
                 g = self.get_group()
                 row = grad.abs().mean(dim=1).to(torch.float32)
                 self.G[g][layer_idx].mul_(1 - self.ema_alpha).add_(self.ema_alpha * row)
@@ -251,6 +266,8 @@ class HotColdLogger:
     def _make_forward_hook(self, layer_idx: int):
         def _fwd(module, inp, out):
             with torch.no_grad():
+                # out resides on the active module's device; move buffers if needed
+                self._ensure_device(out.device)
                 g = self.get_group()
                 y = torch.relu(out)
                 if y.dim() == 3:
