@@ -308,7 +308,7 @@ def main():
     parser.add_argument("--max_train_samples", type=int, default=2000)
 
     parser.add_argument("--log_every", type=int, default=50)
-    parser.add_argument("--snap_every", type=int, default=200)
+    parser.add_argument("--snap_every", type=int, default=1)
     parser.add_argument("--groups", type=int, default=2)
     parser.add_argument("--ema_alpha", type=float, default=0.1)
     parser.add_argument("--hit_t", type=float, default=1e-5)
