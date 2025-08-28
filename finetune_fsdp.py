@@ -13,11 +13,12 @@ Features
 
 Usage
     torchrun --standalone --nproc_per_node=4 finetune_fsdp.py \
-        --model facebook/opt-7b \
+        --model facebook/opt-6.7b \
         --epochs 1 --seq_len 1024 \
         --per_device_batch 1 --grad_accum 8 \
         --lr 2e-5 --wd 0.05 --warmup_ratio 0.03 \
         --outdir ./runs/opt17b_fsdp_gsm8k
+        # —snap_every 1
 """
 
 import os
@@ -54,6 +55,8 @@ from torch.distributed.fsdp import (
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 
 
+
+ckpt_dir = "/pscratch/sd/l/lsx/runs/opt67b_fsdp_gsm8k/checkpoint-final"
 # -------------------------
 # Utilities
 # -------------------------
@@ -176,6 +179,35 @@ def unfreeze_last_n_decoder_layers(model: nn.Module, n: int) -> None:
 # Training
 # -------------------------
 
+def save_hf_checkpoint(model: nn.Module, tokenizer: AutoTokenizer, outdir: str, tag: str, base_model_id: str) -> None:
+    """
+    Gather a FULL HF-style checkpoint on rank 0 and save it under: {outdir}/checkpoint-{tag}
+    Safe for FSDP (uses FULL_STATE_DICT with CPU offload + rank0_only).
+    """
+    # sync before state_dict
+    if is_dist():
+        dist.barrier()
+
+    save_dir = os.path.join(outdir, f"checkpoint-{tag}")
+    if is_main():
+        os.makedirs(save_dir, exist_ok=True)
+
+    # Gather full (unsharded) state to rank0 CPU
+    cpu_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, cpu_cfg):
+        full_state = model.state_dict()
+
+    if is_main():
+        # Bind a clean base model instance (not FSDP-wrapped) to save_pretrained
+        base_model = AutoModelForCausalLM.from_pretrained(base_model_id, torch_dtype=torch.bfloat16)
+        base_model.save_pretrained(save_dir, state_dict=full_state, safe_serialization=True)
+        tokenizer.save_pretrained(save_dir)
+        print(f"[rank 0] Saved checkpoint to: {save_dir}")
+
+    # sync after save to keep ranks together
+    if is_dist():
+        dist.barrier()
+
 def main():
     import argparse
     from tqdm import tqdm
@@ -214,7 +246,12 @@ def main():
 
     if is_main():
         print(f"[rank {rank()}] Loading tokenizer/model: {args.model}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
+    # tokenizer = AutoTokenizer.from_pretrained(ckpt_dir, args.model, use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(
+        ckpt_dir,
+        use_fast=True,
+        local_files_only=True  # avoids hub access when using a local checkpoint
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -240,11 +277,21 @@ def main():
         )
 
     # Load model on CPU; FSDP moves shards to GPUs
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     ckpt_dir,
+    #     args.model,
+    #     torch_dtype=torch.bfloat16,
+    #     low_cpu_mem_usage=True,
+    # )
+    
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
+        ckpt_dir,
+        torch_dtype="auto",
         low_cpu_mem_usage=True,
+        use_safetensors=True
     )
+    
+
     
     # GC and cache
     model.config.use_cache = False          # silence the warning and avoid incompatibility
@@ -308,7 +355,9 @@ def main():
     if is_dist():
         sampler.set_epoch(0)
 
+    
     for epoch in range(args.epochs):
+        batch_loss = []
         if is_dist():
             sampler.set_epoch(epoch)
 
@@ -334,37 +383,28 @@ def main():
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
+                
+            batch_loss.append(out.loss.item())
 
             if is_main():
                 pbar.set_postfix({"loss": f"{out.loss.item():.4f}", "gs": global_step})
                 pbar.update(1)
+        
+        
+        if is_main():    
+            epoch_loss = sum(batch_loss) / len(batch_loss)
+            print("Epoch %d loss: %.4f" % (epoch + 1, epoch_loss))
 
         if is_main():
             pbar.close()
 
-    # ---- Save full (gathered) HF checkpoint on rank 0 ----
-    if is_dist():
-        dist.barrier()
+        # ---- Save checkpoint for this epoch ----
+        save_hf_checkpoint(model, tokenizer, args.outdir, f"epoch-{epoch+1}", args.model)
 
-    save_dir = os.path.join(args.outdir, "checkpoint-final")
-    if is_main():
-        os.makedirs(save_dir, exist_ok=True)
-
-    # Gather full-state on rank0 CPU and save in HF format
-    cpu_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, cpu_cfg):
-        full_state = model.state_dict()
-
-    if is_main():
-        # Use HF save_pretrained with an explicit state_dict (works with FSDP)
-        # Reload a fresh model config to bind save_pretrained; avoids FSDP wrapper in object
-        base_model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.bfloat16)
-        base_model.save_pretrained(save_dir, state_dict=full_state, safe_serialization=True)
-        tokenizer.save_pretrained(save_dir)
-        print(f"[rank 0] Saved checkpoint to: {save_dir}")
+    # ---- Final checkpoint ----
+    save_hf_checkpoint(model, tokenizer, args.outdir, "final", args.model)
 
     if is_dist():
-        dist.barrier()
         dist.destroy_process_group()
         
 
