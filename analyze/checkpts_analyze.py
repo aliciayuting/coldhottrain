@@ -16,7 +16,7 @@ Outputs (under --outdir):
     timeseries_layer{L}.png  # optional top-k neuron curves across epochs
 
 Usage (common):
-  python analyze_checkpoints.py \
+  python checkpts_analyze.py \
     --ckpt_root /path/to/runs/opt17b_fsdp_gsm8k \
     --ckpt_pattern checkpoint-epoch-* \
     --include_final \
@@ -24,9 +24,10 @@ Usage (common):
     --samples 256 --seq_len 512 \
     --per_group \
     --clip_pct 1 99 --log1p --per_layer_norm
-
+    
 Tip: run with small --samples first (128–512) to keep it quick.
 """
+
 
 import os, re, glob, math, argparse, shutil
 from typing import List, Tuple, Dict
@@ -183,7 +184,9 @@ def probe_activations(ckpt: str, out_root: str, samples: int, seq_len: int,
     print(f"[activations] probing {os.path.basename(ckpt)} ...")
     outdir = ensure_dir(os.path.join(out_root, "activations"))
 
-    model = AutoModelForCausalLM.from_pretrained(ckpt, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True).to(device)
+    model = AutoModelForCausalLM.from_pretrained(
+        ckpt, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True
+    ).to(device)
     model.eval()
     tok = AutoTokenizer.from_pretrained(ckpt)
     if tok.pad_token is None:
@@ -199,37 +202,55 @@ def probe_activations(ckpt: str, out_root: str, samples: int, seq_len: int,
         A = [np.zeros((L, H), dtype=np.float64)]
         C = [np.zeros((L,),   dtype=np.int64)]
 
+    # --- key change: shared mutable current group captured by the hook
+    curr_group = [0]
+
     hooks = []
     def make_hook(lid):
         def hook(mod, inp, out):
-            y = torch.relu(out)          # [B,T,H]
+            y = torch.relu(out)              # [B,T,H] or [*,H]
             row = y.float().mean(dim=(0,1))  # [H]
             r = row.detach().cpu().numpy()
             if per_group:
-                g = hook.curr_group
+                g = curr_group[0]
                 A[g][lid] += r; C[g][lid] += 1
             else:
                 A[0][lid] += r; C[0][lid] += 1
         return hook
 
     for lid, m in fc1:
-        h = m.register_forward_hook(make_hook(lid))
-        hooks.append(h)
+        hooks.append(m.register_forward_hook(make_hook(lid)))
 
+    # ---- probe data
     texts, groups = load_probe(samples=samples, seed=1234)
-    B = 8
-    with torch.no_grad():
-        for i in range(0, len(texts), B):
-            chunk = texts[i:i+B]
-            batch = tok(chunk, return_tensors="pt", truncation=True, padding=True, max_length=seq_len).to(device)
-            if per_group:
-                g = groups[i]  # approximate; if you want strict per-group batches, pre-split texts by group
-                for h in hooks: h.curr_group = g
-            _ = model(**batch)
+
+    # Better grouping: run group 0 batch(es), then group 1 batch(es), so the hook
+    # always sees a single group per forward.
+    if per_group:
+        for g_val in (0, 1):
+            grp_texts = [t for t, g in zip(texts, groups) if g == g_val]
+            if not grp_texts:
+                continue
+            curr_group[0] = g_val
+            B = 8
+            with torch.no_grad():
+                for i in range(0, len(grp_texts), B):
+                    chunk = grp_texts[i:i+B]
+                    batch = tok(chunk, return_tensors="pt", truncation=True,
+                                padding=True, max_length=seq_len).to(device)
+                    _ = model(**batch)
+    else:
+        B = 8
+        with torch.no_grad():
+            for i in range(0, len(texts), B):
+                chunk = texts[i:i+B]
+                batch = tok(chunk, return_tensors="pt", truncation=True,
+                            padding=True, max_length=seq_len).to(device)
+                _ = model(**batch)
 
     for h in hooks: h.remove()
 
-    # Save and plot
+    # Save + plot
     tag = os.path.basename(ckpt)
     if per_group:
         for g in (0, 1):
