@@ -42,7 +42,11 @@ Usage example:
 import os, re, glob, argparse, csv, json
 from typing import List, Tuple, Dict, Optional
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # headless backend for HPC/SLURM
 import matplotlib.pyplot as plt
+# Plots subdirectory constant
+PLOTS_SUBDIR = "plots"
 
 import torch
 import torch.nn as nn
@@ -273,6 +277,7 @@ def analyze(args):
 
     weights_dir = ensure_dir(os.path.join(args.outdir, "weights"))
     hotcold_dir = ensure_dir(os.path.join(args.outdir, "hotcold"))
+    plots_root = ensure_dir(os.path.join(args.outdir, PLOTS_SUBDIR))
 
     # Summaries
     hc_rows = [["transition","component","layer","hot_count","cold_count","rows"]]
@@ -306,22 +311,24 @@ def analyze(args):
             if args.which in ("mlp", "both"):
                 outdir = os.path.join(weights_dir, f"delta_{trans_tag}")
                 mlp_delta_path = os.path.join(outdir, "mlp_fc1_row_delta.npz")
+                plots_dir = ensure_dir(os.path.join(plots_root, trans_tag))
                 if os.path.exists(mlp_delta_path):
                     data = np.load(mlp_delta_path)
                     M_mlp = data["delta"]
                     print("- plotting mlp_fc1_row_delta.png (regenerated)")
                     plot_heat(M_mlp, f"Δ fc1 rows ({args.norm}) — {trans_tag}",
-                              os.path.join(outdir, "mlp_fc1_row_delta.png"))
+                              os.path.join(plots_dir, f"{trans_tag}_mlp_fc1_row_delta.png"))
             if args.which in ("mha", "both"):
                 outdir = os.path.join(weights_dir, f"delta_{trans_tag}")
                 for k in ["q_proj","k_proj","v_proj","out_proj"]:
                     attn_delta_path = os.path.join(outdir, f"attn_{k}_row_delta.npz")
+                    plots_dir = ensure_dir(os.path.join(plots_root, trans_tag))
                     if os.path.exists(attn_delta_path):
                         data = np.load(attn_delta_path)
                         M = data["delta"]
                         print(f"- plotting attn_{k}_row_delta.png (regenerated)")
                         plot_heat(M, f"Δ {k} rows ({args.norm}) — {trans_tag}",
-                                  os.path.join(outdir, f"attn_{k}_row_delta.png"))
+                                  os.path.join(plots_dir, f"{trans_tag}_attn_{k}_row_delta.png"))
             continue
 
         # Load models on CPU
@@ -343,8 +350,9 @@ def analyze(args):
             manifest_entry["files"]["mlp_delta"] = mlp_delta_path
             print("- plotting mlp_fc1_row_delta.png")
             if args.plot:
+                plots_dir = ensure_dir(os.path.join(plots_root, trans_tag))
                 plot_heat(M_mlp, f"Δ fc1 rows ({args.norm}) — {trans_tag}",
-                          os.path.join(outdir, "mlp_fc1_row_delta.png"))
+                          os.path.join(plots_dir, f"{trans_tag}_mlp_fc1_row_delta.png"))
             comp_mats["mlp_fc1"] = M_mlp
 
         if args.which in ("mha", "both"):
@@ -356,8 +364,9 @@ def analyze(args):
                                     delta=M, norm=args.norm, layers=M.shape[0], rows=M.shape[1])
                 manifest_entry["files"][f"attn_{k}_delta"] = attn_delta_path
                 if args.plot:
+                    plots_dir = ensure_dir(os.path.join(plots_root, trans_tag))
                     plot_heat(M, f"Δ {k} rows ({args.norm}) — {trans_tag}",
-                              os.path.join(outdir, f"attn_{k}_row_delta.png"))
+                              os.path.join(plots_dir, f"{trans_tag}_attn_{k}_row_delta.png"))
                 comp_mats[f"attn_{k}"] = M
 
         # --- hot/cold per transition ---
