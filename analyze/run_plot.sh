@@ -39,3 +39,13 @@ python plot_coldhot_timelines.py \
   --top_k 256 \
   --sort hot_freq \
   --out /path/to/run/analysis/plots/mlp_fc1_L10_timeline.png
+
+
+python analyze/analyze_hotcold_by_time.py \
+  --ckpt_root /pscratch/sd/l/lsx/runs/opt67b_fsdp_gsm8k/ \
+  --ckpt_pattern "checkpoint-epoch-*" \
+  --include_final \
+  --outdir /pscratch/sd/l/lsx/yyt_runs/opt67b_fsdp_gsm8k/analysis_time \
+  --which both \
+  --norm l2 \
+  --plot
