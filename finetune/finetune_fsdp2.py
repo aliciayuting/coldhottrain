@@ -10,13 +10,15 @@ Features
     - DistributedSampler
     - Simple causal-LM loss on "Question ... Answer ..." strings
     - Full-state checkpoint save (rank0-only) compatible with HF `from_pretrained`
+    - Flexible snapshot scheduling (micro/epoch/exponential) for hot/cold stats
 
 Usage
-    torchrun --standalone --nproc_per_node=4 finetune_fsdp.py \
-        --model facebook/opt-7b \
-        --epochs 1 --seq_len 1024 \
+    torchrun --standalone --nproc_per_node=4 finetune_fsdp2.py \
+        --model facebook/opt-1.7b \
+        --epochs 50 --seq_len 1024 \
         --per_device_batch 1 --grad_accum 8 \
         --lr 2e-5 --wd 0.05 --warmup_ratio 0.03 \
+        --snap_strategy exp --snap_exp_start 200 --snap_exp_growth 1.5 --snap_exp_max 5000 \
         --outdir ./runs/opt17b_fsdp_gsm8k
 """
 
@@ -292,13 +294,19 @@ class HotColdLogger:
             dist.all_reduce(self.H[g], op=dist.ReduceOp.SUM)
             dist.all_reduce(self.A[g], op=dist.ReduceOp.SUM)
 
-    def save_snapshot(self, step: int):
+    def save_snapshot(self, step: int, epoch: int = None, tag_snapshots: bool = False):
         if not is_main():
             return
         os.makedirs(self.outdir, exist_ok=True)
+        # filename tag
+        if tag_snapshots and epoch is not None:
+            fname = f"hotcold_ep{epoch:04d}_step{step:08d}.npz"
+        else:
+            fname = f"hotcold_step{step:08d}.npz"
         np.savez_compressed(
-            os.path.join(self.outdir, f"hotcold_step{step:07d}.npz"),
+            os.path.join(self.outdir, fname),
             step=step,
+            epoch=( -1 if epoch is None else int(epoch) ),
             layers=self.num_layers,
             neurons=self.neurons,
             groups=self.groups,
@@ -306,6 +314,58 @@ class HotColdLogger:
             H=[t.detach().cpu().numpy() for t in self.H],
             A=[t.detach().cpu().numpy() for t in self.A],
         )
+
+
+# -------------------------
+# Snapshot Scheduler
+# -------------------------
+
+class SnapshotScheduler:
+    """
+    Decide when to call hot/cold snapshot based on:
+      - micro: every N optimizer steps
+      - epoch: every N epochs
+      - exp  : exponentially increasing step interval (start, growth, max)
+    """
+    def __init__(self, mode:str, every_steps:int, every_epochs:int,
+                 exp_start:int, exp_growth:float, exp_max:int):
+        self.mode = mode
+        self.every_steps = max(1, int(every_steps))
+        self.every_epochs = max(1, int(every_epochs))
+        self.exp_growth = max(1.0, float(exp_growth))
+        self.exp_max = max(1, int(exp_max))
+        # internal state
+        self.next_step = None
+        if mode == "exp":
+            self.next_step = int(exp_start)
+
+    def should_snapshot(self, epoch_idx:int, optimizer_step:int) -> bool:
+        """
+        epoch_idx: 0-based epoch index
+        optimizer_step: global count of completed optimizer steps (post-step)
+        """
+        if self.mode == "micro":
+            return (optimizer_step % self.every_steps) == 0
+        elif self.mode == "epoch":
+            # only snapshot at end-of-epoch; caller should pass in post-epoch
+            return ((epoch_idx + 1) % self.every_epochs) == 0
+        elif self.mode == "exp":
+            if self.next_step is None:
+                return False
+            return optimizer_step >= self.next_step
+        else:
+            return False
+
+    def advance_if_needed(self, optimizer_step:int):
+        if self.mode != "exp":
+            return
+        if self.next_step is None:
+            return
+        while optimizer_step >= self.next_step:
+            interval = int(min(self.exp_max, max(1, round((self.next_step if self.next_step > 0 else 1) * self.exp_growth))))
+            # if next_step == 0 (unlikely), set to exp_start again
+            interval = max(interval, 1)
+            self.next_step += interval
 
 
 # -------------------------
@@ -321,7 +381,7 @@ def main():
     parser.add_argument("--outdir", type=str, default="./runs/opt17b_fsdp_gsm8k")
     parser.add_argument("--seed", type=int, default=42)
 
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--seq_len", type=int, default=1024)
     parser.add_argument("--per_device_batch", type=int, default=1)
     parser.add_argument("--grad_accum", type=int, default=8)
@@ -332,7 +392,21 @@ def main():
     parser.add_argument("--max_train_samples", type=int, default=2000)
 
     parser.add_argument("--log_every", type=int, default=50)
-    parser.add_argument("--snap_every", type=int, default=1)
+    parser.add_argument("--snap_every", type=int, default=200)
+    parser.add_argument("--snap_strategy", choices=["micro","epoch","exp"], default="micro",
+                        help="micro: every N optimizer steps; epoch: every N epochs; exp: exponentially increasing step interval")
+    parser.add_argument("--snap_every_epochs", type=int, default=1,
+                        help="if --snap_strategy=epoch, snapshot every N epochs")
+    parser.add_argument("--snap_exp_start", type=int, default=200,
+                        help="if --snap_strategy=exp, initial step interval")
+    parser.add_argument("--snap_exp_growth", type=float, default=1.5,
+                        help="if --snap_strategy=exp, multiply interval by this after each snapshot")
+    parser.add_argument("--snap_exp_max", type=int, default=5000,
+                        help="if --snap_strategy=exp, cap the interval to this many steps")
+    parser.add_argument("--tag_snapshots", action="store_true",
+                        help="add epoch/step tags to snapshot filenames")
+    parser.add_argument("--loss_log_every", type=int, default=50,
+                        help="write train loss every N optimizer steps to CSV on rank0")
     parser.add_argument("--groups", type=int, default=2)
     parser.add_argument("--ema_alpha", type=float, default=0.1)
     parser.add_argument("--hit_t", type=float, default=1e-5)
@@ -412,6 +486,22 @@ def main():
         outdir=args.outdir,
     )
 
+    # Snapshot scheduler
+    snap_sched = SnapshotScheduler(
+        mode=args.snap_strategy,
+        every_steps=args.snap_every,
+        every_epochs=args.snap_every_epochs,
+        exp_start=args.snap_exp_start,
+        exp_growth=args.snap_exp_growth,
+        exp_max=args.snap_exp_max,
+    )
+
+    # Loss CSV (rank0 only)
+    loss_csv_path = os.path.join(args.outdir, "train_loss.csv")
+    if is_main() and not os.path.exists(loss_csv_path):
+        with open(loss_csv_path, "w") as f:
+            f.write("epoch,optimizer_step,micro_id,loss\n")
+
     # ---- FSDP setup (ZeRO-3 equivalent) ----
     mp_conf = MixedPrecision(
         param_dtype=torch.bfloat16,
@@ -457,6 +547,7 @@ def main():
 
     # Train
     global_step = 0
+    optimizer_step = 0
     model.train()
     if is_dist():
         sampler.set_epoch(0)
@@ -489,24 +580,36 @@ def main():
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
+                optimizer_step += 1
 
-                # Periodic distributed reduce (DP only) and snapshot (by micro-step id)
+                # Periodic distributed reduce (DP only) keyed by micro id
                 micro_id = epoch * len(loader) + step + 1
                 if micro_id % args.log_every == 0:
                     hotcold.reduce_stats()
-                if micro_id % args.snap_every == 0:
-                    hotcold.save_snapshot(micro_id)
+
+                # Snapshot based on scheduler (optimizer step granularity)
+                if snap_sched.should_snapshot(epoch_idx=epoch, optimizer_step=optimizer_step):
+                    hotcold.save_snapshot(step=optimizer_step, epoch=epoch, tag_snapshots=args.tag_snapshots)
+                    snap_sched.advance_if_needed(optimizer_step)
+
+                # Periodic loss CSV on rank0
+                if is_main() and (optimizer_step % max(1, args.loss_log_every) == 0):
+                    with open(loss_csv_path, "a") as f:
+                        f.write(f"{epoch},{optimizer_step},{micro_id},{out.loss.item():.6f}\n")
 
             if is_main():
                 pbar.set_postfix({"loss": f"{out.loss.item():.4f}", "gs": global_step})
                 pbar.update(1)
 
+        # End-of-epoch snapshot if using epoch strategy
+        if snap_sched.should_snapshot(epoch_idx=epoch, optimizer_step=optimizer_step) and args.snap_strategy == "epoch":
+            hotcold.save_snapshot(step=optimizer_step, epoch=epoch, tag_snapshots=args.tag_snapshots)
+
         if is_main():
             pbar.close()
 
     # Final snapshot regardless of cadence
-    final_micro = args.epochs * len(loader)
-    hotcold.save_snapshot(final_micro)
+    hotcold.save_snapshot(step=optimizer_step, epoch=args.epochs-1, tag_snapshots=args.tag_snapshots)
 
     # ---- Save full (gathered) HF checkpoint on rank 0 ----
     if is_dist():
