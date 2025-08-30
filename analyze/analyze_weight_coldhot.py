@@ -267,10 +267,6 @@ def pack_component_masks(hotcold_dir: str, component: str, out_npz: str):
 # -----------------------
 
 def analyze(args):
-    if args.which in ("mlp", "both"):
-        print("analyze mlp")
-        if args.plot:
-            print("args plot")
     ckpts = sorted_checkpoints(args.ckpt_root, args.ckpt_pattern, args.include_final)
     tags = [epoch_tag(c) for c in ckpts]
     print("[*] checkpoints:", tags)
