@@ -286,7 +286,7 @@ def analyze(args):
         trans_tag = f"{ta}->{tb}"
         print(f"[Δ] {trans_tag}")
 
-        # Reuse if all outputs already exist
+        # Reuse if all outputs already exist; regenerate plots unconditionally
         if args.reuse_if_exists and transition_complete(args.outdir, trans_tag, args.which):
             print(f"[skip] {trans_tag} already computed; reusing on-disk results.")
             manifest_rows.append({"transition": trans_tag, "reused": True})
@@ -302,6 +302,26 @@ def analyze(args):
                     if os.path.exists(f):
                         M = np.load(f, allow_pickle=True)["hot"].astype(bool)
                         prev_hot_masks[f"attn_{k}"] = M
+            # Always regenerate plots from existing delta files
+            if args.which in ("mlp", "both"):
+                outdir = os.path.join(weights_dir, f"delta_{trans_tag}")
+                mlp_delta_path = os.path.join(outdir, "mlp_fc1_row_delta.npz")
+                if os.path.exists(mlp_delta_path):
+                    data = np.load(mlp_delta_path)
+                    M_mlp = data["delta"]
+                    print("- plotting mlp_fc1_row_delta.png (regenerated)")
+                    plot_heat(M_mlp, f"Δ fc1 rows ({args.norm}) — {trans_tag}",
+                              os.path.join(outdir, "mlp_fc1_row_delta.png"))
+            if args.which in ("mha", "both"):
+                outdir = os.path.join(weights_dir, f"delta_{trans_tag}")
+                for k in ["q_proj","k_proj","v_proj","out_proj"]:
+                    attn_delta_path = os.path.join(outdir, f"attn_{k}_row_delta.npz")
+                    if os.path.exists(attn_delta_path):
+                        data = np.load(attn_delta_path)
+                        M = data["delta"]
+                        print(f"- plotting attn_{k}_row_delta.png (regenerated)")
+                        plot_heat(M, f"Δ {k} rows ({args.norm}) — {trans_tag}",
+                                  os.path.join(outdir, f"attn_{k}_row_delta.png"))
             continue
 
         # Load models on CPU
