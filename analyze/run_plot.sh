@@ -28,8 +28,8 @@ python analyze_weight_coldhot.py \
   --include_final \
   --outdir /pscratch/sd/l/lsx/yyt_runs/opt67b_fsdp_gsm8k/analysis \
   --which both --norm l2 \
-  --hot_pct 95 --cold_pct 50 --per_layer_thresholds \
-  --reuse_if_exists --pack_tensors
+  --hot_pct 80 --cold_pct 50 --per_layer_thresholds \
+  --reuse_if_exists --pack_tensors --plot
 
 # plot
 python plot_coldhot_timelines.py \

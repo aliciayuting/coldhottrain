@@ -314,12 +314,14 @@ def analyze(args):
         comp_mats: Dict[str, np.ndarray] = {}
 
         if args.which in ("mlp", "both"):
+            print("analyze mlp")
             M_mlp = compute_mlp_delta(A, B, norm=args.norm)
             outdir = ensure_dir(os.path.join(weights_dir, f"delta_{trans_tag}"))
             mlp_delta_path = os.path.join(outdir, "mlp_fc1_row_delta.npz")
             np.savez_compressed(mlp_delta_path,
                                 delta=M_mlp, norm=args.norm, layers=M_mlp.shape[0], neurons=M_mlp.shape[1])
             manifest_entry["files"]["mlp_delta"] = mlp_delta_path
+            print("- plotting mlp_fc1_row_delta.png")
             if args.plot:
                 plot_heat(M_mlp, f"Δ fc1 rows ({args.norm}) — {trans_tag}",
                           os.path.join(outdir, "mlp_fc1_row_delta.png"))
