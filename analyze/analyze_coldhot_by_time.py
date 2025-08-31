@@ -238,10 +238,21 @@ def _trans_tag_from_dir(d: str) -> str:
 # helper to sort tags numerically: '...epoch-2->...epoch-10' should be after '...1->2'
 
 def _parse_epoch_pair(tag: str):
-    m = re.match(r".*epoch-(\d+)->.*epoch-(\d+)$", tag)
+    """
+    Return a uniform tuple for sorting transition tags.
+    Handles tags like:
+      '...checkpoint-epoch-2->...checkpoint-epoch-10'
+      '...checkpoint-epoch-39->...checkpoint-final'
+    Falls back to lexical ordering if the pattern doesn't match.
+    """
+    m = re.match(r".*epoch-(\d+|final)->.*epoch-(\d+|final)$", tag)
     if not m:
-        return (tag, tag)
-    return (int(m.group(1)), int(m.group(2)))
+        return (1, 0, 0, tag)
+    def to_int(x: str) -> int:
+        return 10**9 if x == "final" else int(x)
+    a = to_int(m.group(1))
+    b = to_int(m.group(2))
+    return (0, a, b, "")
 
 def collect_transitions_from_npz(reuse_outdir: str) -> Tuple[List[str], Dict[str, Dict[str, str]]]:
     """
@@ -276,8 +287,11 @@ def collect_transitions_from_npz(reuse_outdir: str) -> Tuple[List[str], Dict[str
     transitions = sorted(files_map.keys(), key=_parse_epoch_pair)
     return transitions, files_map
 
-def build_timelines_from_npz(reuse_outdir: str, which: str):
+def build_timelines_from_npz(reuse_outdir: str, which: str, include_final: bool = False):
     transitions, files_map = collect_transitions_from_npz(reuse_outdir)
+    # Control presence of checkpoint-final using include_final (consistent with checkpoint mode)
+    if not include_final:
+        transitions = [t for t in transitions if "final" not in t]
 
     tl_mlp_lists: Dict[int, List[np.ndarray]] = {}
     tl_mha_lists: Dict[str, Dict[int, List[np.ndarray]]] = {k: {} for k in ["q_proj","k_proj","v_proj","out_proj"]}
@@ -393,7 +407,9 @@ def main():
     ensure_dir(args.outdir)
 
     if args.reuse_from_outdir:
-        transitions, tl_mlp, tl_mha = build_timelines_from_npz(args.reuse_from_outdir, which=args.which)
+        transitions, tl_mlp, tl_mha = build_timelines_from_npz(
+            args.reuse_from_outdir, which=args.which, include_final=args.include_final
+        )
     else:
         if not args.ckpt_root:
             raise ValueError("Either --reuse_from_outdir or --ckpt_root must be provided.")
