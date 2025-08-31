@@ -6,9 +6,9 @@
 Build per-layer timelines of row-wise weight deltas across checkpoints OR reuse
 NPZ deltas produced by analyze_weight_coldhot.py.
 
-Per layer ℓ we stack rowwise deltas across transitions into H_ℓ ∈ ℝ^{T×R}:
+For each layer, we stack row-wise deltas across transitions into a matrix of shape [T, R]:
   - T = number of transitions (N checkpoints - 1, or number of NPZ delta files)
-  - R = rows (neurons/outputs) of the target linear (e.g., fc1.out_features)
+  - R = number of rows (neurons/outputs) in the target linear layer (for example, fc1.out_features)
 
 Two modes:
   1) Checkpoint mode (default): load checkpoints and compute deltas.
@@ -358,7 +358,7 @@ def save_timelines(outdir: str,
         np.savez_compressed(path_npz, delta_timeline=mat, transitions=np.array(transitions, dtype=object))
         if do_plot:
             plot_heat(
-                mat, f"{title} — norm={norm}", os.path.join(lid_dir, f"{name}_timeline.png"),
+                mat, f"{title} - norm={norm}", os.path.join(lid_dir, f"{name}_timeline.png"),
                 cmap="magma", log1p=log1p, vmin=global_vmin, vmax=global_vmax,
                 vmin_pct=vmin_pct, vmax_pct=vmax_pct, per_time_norm=per_time_norm,
             )
@@ -366,13 +366,13 @@ def save_timelines(outdir: str,
     if tl_mlp is not None:
         for lid, H in tl_mlp.items():
             lid_dir = ensure_dir(os.path.join(layers_root, f"L{lid:02d}"))
-            _save_one(lid_dir, "mlp_fc1", H, f"L{lid:02d} Δ fc1 rows over time")
+            _save_one(lid_dir, "mlp_fc1", H, f"L{lid:02d} fc1 rows over time")
 
     if tl_mha is not None:
         for proj, per_layer in tl_mha.items():
             for lid, H in per_layer.items():
                 lid_dir = ensure_dir(os.path.join(layers_root, f"L{lid:02d}"))
-                _save_one(lid_dir, proj, H, f"L{lid:02d} Δ {proj} rows over time")
+                _save_one(lid_dir, proj, H, f"L{lid:02d} {proj} rows over time")
 
 # -----------------------
 # CLI
@@ -455,7 +455,7 @@ def main():
         norm=args.norm,
     )
 
-    print(f"[✓] Done. Per-layer timelines written under: {os.path.join(args.outdir, 'by_layer')}")
+    print(f"[OK] Done. Per-layer timelines written under: {os.path.join(args.outdir, 'by_layer')}")
 
 if __name__ == "__main__":
     main()
