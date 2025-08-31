@@ -1,9 +1,10 @@
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 """
 Build per-layer timelines of row-wise weight deltas across checkpoints OR reuse
-the NPZ deltas produced by analyze_weight_coldhot.py.
+NPZ deltas produced by analyze_weight_coldhot.py.
 
 Per layer ℓ we stack rowwise deltas across transitions into H_ℓ ∈ ℝ^{T×R}:
   - T = number of transitions (N checkpoints - 1, or number of NPZ delta files)
@@ -23,13 +24,16 @@ Output under --outdir:
     out_proj_timeline.{npz,png}
   transitions.json
 
-Usage (reuse NPZ deltas):
+Examples
+--------
+Reuse NPZ deltas with global color scaling (robust to outliers):
   python analyze_coldhot_by_time.py \
     --reuse_from_outdir /pscratch/.../analysis \
     --outdir /pscratch/.../analysis_time \
-    --which both --norm l2 --plot
+    --which both --norm l2 --plot \
+    --global_scale --vmin_pct 1 --vmax_pct 99
 
-Usage (compute from checkpoints, legacy):
+Compute from checkpoints (legacy path):
   python analyze_coldhot_by_time.py \
     --ckpt_root /pscratch/.../runs/opt_fsdp \
     --ckpt_pattern 'checkpoint-epoch-*' \
@@ -40,7 +44,6 @@ Usage (compute from checkpoints, legacy):
 
 import os, re, glob, json, argparse
 from typing import Dict, List, Tuple, Optional
-from glob import glob as _glob
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -75,10 +78,34 @@ def sorted_checkpoints(root: str, pattern: str, include_final: bool) -> List[str
 def epoch_tag(path: str) -> str:
     return os.path.basename(path.rstrip("/"))
 
-def plot_heat(mat: np.ndarray, title: str, outpath: str, cmap: str = "magma", log1p: bool = True):
+def plot_heat(mat: np.ndarray, title: str, outpath: str, *,
+              cmap: str = "magma", log1p: bool = True,
+              vmin: float = None, vmax: float = None,
+              vmin_pct: float = None, vmax_pct: float = None,
+              per_time_norm: bool = False):
+    """Render a heatmap with robust scaling options.
+
+    - log1p: apply log1p before plotting (ignored if per_time_norm=True)
+    - vmin/vmax: explicit color limits override percentiles
+    - vmin_pct/vmax_pct: percentile-based clipping if explicit limits not provided
+    - per_time_norm: normalize each time row to its own max (reveals structure when dynamics vary widely)
+    """
+    M = mat.copy()
+    if per_time_norm:
+        den = np.maximum(M.max(axis=1, keepdims=True), 1e-12)
+        M = M / den
+        img = M  # already normalized; log not helpful here
+    else:
+        img = np.log1p(M) if log1p else M
+
+    if vmin is None and vmax is None and (vmin_pct is not None or vmax_pct is not None):
+        vvmin = np.percentile(img, vmin_pct) if vmin_pct is not None else None
+        vvmax = np.percentile(img, vmax_pct) if vmax_pct is not None else None
+        vmin, vmax = vvmin, vvmax
+
     plt.figure(figsize=(11, 6))
-    img = np.log1p(mat) if log1p else mat
-    im = plt.imshow(img, aspect="auto", interpolation="nearest", cmap=cmap, origin="lower")
+    im = plt.imshow(img, aspect="auto", interpolation="nearest", cmap=cmap, origin="lower",
+                    vmin=vmin, vmax=vmax)
     plt.colorbar(im, fraction=0.046, pad=0.04)
     plt.xlabel("Row index (neuron/output)")
     plt.ylabel("Transition index (time)")
@@ -117,7 +144,7 @@ def discover_mha_projs(model: nn.Module):
     return projs
 
 # -----------------------
-# Row-wise deltas (for checkpoint mode)
+# Row-wise deltas (checkpoint mode)
 # -----------------------
 
 def row_change(Wa: torch.Tensor, Wb: torch.Tensor, norm: str) -> torch.Tensor:
@@ -202,18 +229,26 @@ def build_timelines(ckpts: List[str], which: str, norm: str):
 
 def _find_transition_dirs(reuse_outdir: str) -> List[str]:
     root = os.path.join(reuse_outdir, "weights")
-    return sorted(_glob(os.path.join(root, "delta_*")))
+    return sorted(glob.glob(os.path.join(root, "delta_*")))
 
 def _trans_tag_from_dir(d: str) -> str:
     base = os.path.basename(d.rstrip("/"))
     return base[len("delta_"):] if base.startswith("delta_") else base
+
+# helper to sort tags numerically: '...epoch-2->...epoch-10' should be after '...1->2'
+
+def _parse_epoch_pair(tag: str):
+    m = re.match(r".*epoch-(\d+)->.*epoch-(\d+)$", tag)
+    if not m:
+        return (tag, tag)
+    return (int(m.group(1)), int(m.group(2)))
 
 def collect_transitions_from_npz(reuse_outdir: str) -> Tuple[List[str], Dict[str, Dict[str, str]]]:
     """
     Scan weights/delta_{A->B}/ and collect available per-transition NPZ paths.
 
     Returns:
-      transitions: ordered list of trans_tag (alphabetical as a fallback)
+      transitions: ordered list of trans_tag (numerically sorted)
       files_map: dict trans_tag -> dict(component -> filepath)
                  components: mlp_fc1, attn_q_proj, attn_k_proj, attn_v_proj, attn_out_proj
     """
@@ -237,7 +272,8 @@ def collect_transitions_from_npz(reuse_outdir: str) -> Tuple[List[str], Dict[str
         if comp:
             files_map[tag] = comp
 
-    transitions = sorted(files_map.keys())  # alphabetical; good enough if tags contain epoch numbers
+    # sort transitions in true temporal order (0->1, 1->2, 9->10, ...)
+    transitions = sorted(files_map.keys(), key=_parse_epoch_pair)
     return transitions, files_map
 
 def build_timelines_from_npz(reuse_outdir: str, which: str):
@@ -290,7 +326,14 @@ def save_timelines(outdir: str,
                    transitions: List[str],
                    tl_mlp: Dict[int, np.ndarray] = None,
                    tl_mha: Dict[str, Dict[int, np.ndarray]] = None,
-                   plot: bool = True,
+                   *,
+                   do_plot: bool = True,
+                   log1p: bool = True,
+                   vmin_pct: float = None,
+                   vmax_pct: float = None,
+                   per_time_norm: bool = False,
+                   global_vmin: float = None,
+                   global_vmax: float = None,
                    norm: str = "l2"):
     layers_root = ensure_dir(os.path.join(outdir, "by_layer"))
     with open(os.path.join(outdir, "transitions.json"), "w") as f:
@@ -299,8 +342,12 @@ def save_timelines(outdir: str,
     def _save_one(lid_dir: str, name: str, mat: np.ndarray, title: str):
         path_npz = os.path.join(lid_dir, f"{name}_timeline.npz")
         np.savez_compressed(path_npz, delta_timeline=mat, transitions=np.array(transitions, dtype=object))
-        if plot:
-            plot_heat(mat, f"{title} — norm={norm}", os.path.join(lid_dir, f"{name}_timeline.png"))
+        if do_plot:
+            plot_heat(
+                mat, f"{title} — norm={norm}", os.path.join(lid_dir, f"{name}_timeline.png"),
+                cmap="magma", log1p=log1p, vmin=global_vmin, vmax=global_vmax,
+                vmin_pct=vmin_pct, vmax_pct=vmax_pct, per_time_norm=per_time_norm,
+            )
 
     if tl_mlp is not None:
         for lid, H in tl_mlp.items():
@@ -333,12 +380,19 @@ def main():
     ap.add_argument("--which", choices=["mlp","mha","both"], default="both")
     ap.add_argument("--norm", choices=["l1","l2"], default="l2")
     ap.add_argument("--plot", action="store_true")
+
+    # Plot scaling controls
+    ap.add_argument("--no_log", action="store_true", help="Disable log1p before plotting (default: log1p on).")
+    ap.add_argument("--vmin_pct", type=float, default=None, help="Lower percentile for color scale (e.g., 1.0).")
+    ap.add_argument("--vmax_pct", type=float, default=None, help="Upper percentile for color scale (e.g., 99.0).")
+    ap.add_argument("--per_time_norm", action="store_true", help="Normalize each time row to its own max before plotting.")
+    ap.add_argument("--global_scale", action="store_true", help="Use one global vmin/vmax across all layers/components.")
+
     args = ap.parse_args()
 
     ensure_dir(args.outdir)
 
     if args.reuse_from_outdir:
-        # Build timelines from existing NPZ deltas (fast path)
         transitions, tl_mlp, tl_mha = build_timelines_from_npz(args.reuse_from_outdir, which=args.which)
     else:
         if not args.ckpt_root:
@@ -347,7 +401,44 @@ def main():
         print("[*] checkpoints:", [epoch_tag(c) for c in ckpts])
         transitions, tl_mlp, tl_mha = build_timelines(ckpts, which=args.which, norm=args.norm)
 
-    save_timelines(args.outdir, transitions, tl_mlp, tl_mha, plot=args.plot, norm=args.norm)
+    # Optional: compute global vmin/vmax so all plots share the same color scale
+    global_vmin = None
+    global_vmax = None
+    if args.global_scale:
+        mats = []
+        def _prep(M):
+            X = M.copy()
+            if args.per_time_norm:
+                den = np.maximum(X.max(axis=1, keepdims=True), 1e-12)
+                X = X / den
+                return X
+            return np.log1p(X) if not args.no_log else X
+        if tl_mlp is not None:
+            for _lid, H in tl_mlp.items():
+                mats.append(_prep(H))
+        if tl_mha is not None:
+            for _proj, per_layer in tl_mha.items():
+                for _lid, H in per_layer.items():
+                    mats.append(_prep(H))
+        if mats:
+            big = np.concatenate([m.reshape(-1) for m in mats])
+            if args.vmin_pct is not None:
+                global_vmin = float(np.percentile(big, args.vmin_pct))
+            if args.vmax_pct is not None:
+                global_vmax = float(np.percentile(big, args.vmax_pct))
+
+    save_timelines(
+        args.outdir, transitions, tl_mlp, tl_mha,
+        do_plot=args.plot,
+        log1p=not args.no_log,
+        vmin_pct=args.vmin_pct,
+        vmax_pct=args.vmax_pct,
+        per_time_norm=args.per_time_norm,
+        global_vmin=global_vmin,
+        global_vmax=global_vmax,
+        norm=args.norm,
+    )
+
     print(f"[✓] Done. Per-layer timelines written under: {os.path.join(args.outdir, 'by_layer')}")
 
 if __name__ == "__main__":
