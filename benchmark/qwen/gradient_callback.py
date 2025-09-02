@@ -16,6 +16,7 @@ class PerModuleGradDumper(TrainerCallback):
 
     def __init__(self,
                  out_dir="grad_dump",
+                 model=None,
                  capture_steps=100,
                  include_bias=False,
                  also_embeddings=False,
@@ -42,6 +43,9 @@ class PerModuleGradDumper(TrainerCallback):
         # Track epoch & local steps inside the epoch
         self._epoch_idx = -1           # integer epoch counter we control
         self._step_in_epoch = 0
+        
+        self._model = model
+        
 
     # def _is_main(self):
     #     return (self._rank == 0)
@@ -52,24 +56,25 @@ class PerModuleGradDumper(TrainerCallback):
     #         self._world = dist.get_world_size()
 
     # -------- Trainer hooks --------
-    def on_train_begin(self, args, state, control, model=None, **kwargs):
-        if _is_main():
-            print(f"[on_train_begin] max_steps={state.max_steps} epochs={args.num_train_epochs}")
+    # def on_train_begin(self, args, state, control, model=None, **kwargs):
+    #     if _is_main():
+    #         print(f"[on_train_begin] max_steps={state.max_steps} epochs={args.num_train_epochs}")
+            # self._model = kwargs.get("model", None)
+            # print(f"!!! {self._model is not None}")
 
     
-    def on_epoch_begin(self, args, state, control, **kwargs):
-        if _is_main():
-            print(f"[on_epoch_begin] epoch_float={state.epoch}")
+    # def on_epoch_begin(self, args, state, control, **kwargs):
+    #     if _is_main():
+            # print(f"[on_epoch_begin] epoch_float={state.epoch}")
             # New epoch started; bump integer epoch counter and reset local step
-            self._epoch_idx += 1
-            self._step_in_epoch = 0
+            # self._epoch_idx += 1
+            # self._step_in_epoch = 0
 
     @torch.no_grad()
-    def on_substep_end(self, args, state, control, **kwargs):
-        if _is_main():
-            print(f"[on_substep_end] global_step={state.global_step}")
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        # if _is_main():
+        #     print(f"[grad dump on_step_end] global_step={state.global_step}")
 
-        if _is_main(): print(f"!!!!!!! {state.global_step}")
         # Increment local step-in-epoch first (so first batch is 1)
         self._step_in_epoch += 1
 
@@ -85,18 +90,32 @@ class PerModuleGradDumper(TrainerCallback):
 
         # epoch_float from TrainerState (may be None early on, so guard)
         epoch_float = float(state.epoch) if state.epoch is not None else float(self._epoch_idx)
+        
+        
+        model = self._model
 
         # Resolve layers list (Qwen/LLaMA style)
+        # layers = None
+        # for cand in ["model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers"]:
+        #     try:
+        #         layers = eval(f"model.{cand}")
+        #         break
+        #     except Exception:
+        #         pass
+            
         layers = None
-        for cand in ["model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers"]:
+        for cand in ["model.model.layers", "model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers"]:
             try:
-                layers = eval(f"model.{cand}")
+                layers = eval(f"m.{cand}", {"m": self._model})
                 break
             except Exception:
                 pass
+        
         if layers is None:
             print("[PerModuleGradDumper] Could not locate transformer layers; skipping.")
             return
+        # else:
+        #     print(f"layers: {layers}")
 
         # Prepare step dir
         step_dir = os.path.join(self.out_dir, f"step{step:06d}")
@@ -106,6 +125,7 @@ class PerModuleGradDumper(TrainerCallback):
 
         def dump_param(layer_id: int, submod_name: str, pname: str, tensor: torch.Tensor):
             if tensor is None or tensor.grad is None:
+                print(f"[PerModuleGradDumper WARNING] {submod_name}.{pname} (no grad)")
                 return
             g = tensor.grad.detach().to(torch.float32)  # keep exact shape in .npy
             shape = tuple(g.shape)
@@ -142,6 +162,8 @@ class PerModuleGradDumper(TrainerCallback):
                         dump_param(lid, "self_attn", f"{nm}.weight", sub.weight)
                     if self.include_bias and hasattr(sub, "bias") and sub.bias is not None:
                         dump_param(lid, "self_attn", f"{nm}.bias", sub.bias)
+            else:
+                print(f"attn is None")
 
             # MLP projections (SwiGLU)
             if mlp is not None:
@@ -157,12 +179,12 @@ class PerModuleGradDumper(TrainerCallback):
         # Optionally embeddings / lm_head
         if self.also_embeddings:
             for name in ["model.embed_tokens", "transformer.wte", "wte", "tok_embeddings"]:
-                emb = _safe_getattr_chain(model, name)
+                emb = _safe_getattr_chain(self._model, name)
                 if emb is not None and hasattr(emb, "weight"):
                     dump_param(-1, "embeddings", "weight", emb.weight)
                     break
             for name in ["lm_head"]:
-                lm = _safe_getattr_chain(model, name)
+                lm = _safe_getattr_chain(self._model, name)
                 if lm is not None:
                     if hasattr(lm, "weight"):
                         dump_param(-1, "lm_head", "weight", lm.weight)
@@ -178,6 +200,16 @@ class PerModuleGradDumper(TrainerCallback):
 
         print(f"[PerModuleGradDumper] step={step} epoch_idx={self._epoch_idx} "
               f"step_in_epoch={self._step_in_epoch} dumped {len(rows)} tensors -> {step_dir}")
+
+    
+    # def on_substep_end(self, args, state, control, **kwargs):
+    #     # Fires after optimizer step; here global_step has just incremented
+    #     if _is_main():
+    #         print(f"[probe on_substep_end] global_step={state.global_step}")
+            
+    # def on_pre_optimizer_step(self, args, state, control, **kwargs):
+    #     if _is_main():
+    #         print(f"[probe on_pre_optimizer_step] global_step={state.global_step}")
 
 def _safe_getattr_chain(root, dotted):
     cur = root

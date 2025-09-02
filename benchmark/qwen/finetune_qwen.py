@@ -8,7 +8,17 @@ MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
 
 
-
+def safe_destroy():
+    if dist.is_available() and dist.is_initialized():
+        try:
+            # Optional but helpful to flush in-flight NCCL ops
+            dist.barrier()
+        except Exception:
+            pass
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
 
 
 # Load tokenizer & model
@@ -51,17 +61,17 @@ output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replac
 args = TrainingArguments(
     output_dir=f"{output_dir}/ckpt",
     per_device_train_batch_size=4,
-    # gradient_accumulation_steps=8,
-    gradient_accumulation_steps=2,
-    num_train_epochs=1,
+    gradient_accumulation_steps=8,
+    # gradient_accumulation_steps=1,
+    num_train_epochs=40,
     learning_rate=2e-5,
     # fp16=True,
     bf16=True,
-    logging_steps=50,
-    save_steps=1000,
-    save_total_limit=2,
+    logging_steps=100,
+    save_steps=100,
+    # save_total_limit=2,
     ddp_find_unused_parameters=False,
-    max_steps = 2,
+    # max_steps = 16,
 )
 
 
@@ -84,18 +94,22 @@ print(f"#GPUs: {num_gpus}  Global batch: {global_batch}  Iters/epoch: {iters_per
 # dump_out_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace("/", "_")}-{DATASET.replace('/', '_')}-grad_dump"
 dump_out_dir = f"{output_dir}/grad_dump"
 
-# dump_cb = PerModuleGradDumper(
-#     out_dir=dump_out_dir,
-#     capture_steps=1,
-#     include_bias=False,
-#     also_embeddings=False,  # set True if you also want embeddings/lm_head
-# )
-# trainer.add_callback(dump_cb)
+dump_cb = PerModuleGradDumper(
+    out_dir=dump_out_dir,
+    model=model,
+    capture_steps=100,
+    include_bias=True,
+    also_embeddings=False,  # set True if you also want embeddings/lm_head
+)
+trainer.add_callback(dump_cb)
 
-probe_cb = Probe()
-trainer.add_callback(probe_cb)
+# probe_cb = Probe()
+# trainer.add_callback(probe_cb)
 
 
 
 # Start training
 trainer.train()
+
+
+safe_destroy()
