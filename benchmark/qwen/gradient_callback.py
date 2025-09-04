@@ -70,6 +70,7 @@ class PerModuleGradDumper(TrainerCallback):
         # Save model weights/config (no optimizer states here)
         try:
             self._model.save_pretrained(ckpt_dir, safe_serialization=True)
+            print(f" model checkpoints saved at {ckpt_dir}")
         except TypeError:
             # for very old HF versions lacking safe_serialization kw
             self._model.save_pretrained(ckpt_dir)
