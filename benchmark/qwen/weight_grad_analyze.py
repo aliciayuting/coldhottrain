@@ -18,10 +18,10 @@ Saves:
 # ========================
 # Config (edit these)
 # ========================
-GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
-WEIGHT_ROOT     = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
+GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
+WEIGHT_ROOT     = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
 GLOBAL_STEP     = 200        # plots grads @ this step; compares stepXXXXXX_pre vs stepXXXXXX_post
-OUT_DIR         = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots"
+OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots"
 
 SAMPLE_FRAC     = 1.0        # <1.0 to uniformly subsample to save RAM (e.g., 0.25)
 TOP_P           = 0.01       # annotate top 1% capture on each curve
