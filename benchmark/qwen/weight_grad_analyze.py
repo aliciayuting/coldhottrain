@@ -1,9 +1,9 @@
 # --- Notebook config (edit these) ---
-GRAD_BASE_DIR  = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
+GRAD_BASE_DIR  = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
 GLOBAL_STEP    = 200          # e.g., 200 -> reads step000200 grads from index.csv
-WEIGHT_ROOT    = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
+WEIGHT_ROOT    = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
 WEIGHT_STEP_TAG= "step000200_pre"   # e.g., step000200_pre / step000200_post / step000200_next_pre
-OUT_DIR        = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots"
+OUT_DIR        = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots"
 
 # Controls
 SAMPLE_FRAC    = 1.0          # set <1.0 (e.g., 0.25) for uniform subsampling to save RAM
