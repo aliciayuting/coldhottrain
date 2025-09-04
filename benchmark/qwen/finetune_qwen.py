@@ -55,8 +55,10 @@ tokenized_ds = ds.map(format_example, batched=False)
 # Data collator
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
-output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+# output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+output_dir = f"/pscratch/sd/l/lsx/yyt_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
 
+weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
 args = TrainingArguments(
     output_dir=f"{output_dir}/ckpt",
@@ -100,6 +102,7 @@ dump_cb = PerModuleGradDumper(
     capture_steps=100,
     include_bias=True,
     also_embeddings=False,  # set True if you also want embeddings/lm_head
+    weight_out_dir=weight_out_dir,
 )
 trainer.add_callback(dump_cb)
 
