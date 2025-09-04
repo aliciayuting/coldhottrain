@@ -78,7 +78,7 @@ def main():
         try:
             # Avoid importing torch unless we have to—safetensors returns torch tensors anyway.
             import torch  # local import to keep script lightweight
-            flat10 = t.reshape(-1)[:10].to(torch.float32).tolist()
+            flat10 = t.reshape(-1)[:100].to(torch.float32).tolist()
             print(f"{ckpt}: {wk_key} shape={tuple(t.shape)} dtype={t.dtype} first10={flat10}")
         except Exception as e:
             print(f"{ckpt}: {wk_key} <unable to read> reason={e}")
