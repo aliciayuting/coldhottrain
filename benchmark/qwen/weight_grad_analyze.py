@@ -269,6 +269,7 @@ def main():
     xg, yg, Ng = _make_curve(g2_all)
     grad_png = os.path.join(OUT_DIR, f"grad_curve_step{GLOBAL_STEP:06d}.png")
     g_cap = _plot_curve(xg, yg, f"Gradients @ step {GLOBAL_STEP}", grad_png, top_p=TOP_P)
+    print(f"[DEBUG] Grad array shape: {g2_all.shape}, ndim: {g2_all.ndim}, dtype: {g2_all.dtype}")
 
     # Weight deltas (post - pre)
     d2_all = load_delta_sq_from_pre_post(
@@ -277,6 +278,8 @@ def main():
         exclude_patterns=EXCLUDE_PATTERNS,
         include_bias=INCLUDE_BIAS
     )
+    print(f"[DEBUG] ΔW array shape: {d2_all.shape}, ndim: {d2_all.ndim}, dtype: {d2_all.dtype}")
+
     xd, yd, Nd = _make_curve(d2_all)
     delta_png = os.path.join(OUT_DIR, f"weight_delta_curve_step{GLOBAL_STEP:06d}.png")
     d_cap = _plot_curve(xd, yd, f"ΔW @ step {GLOBAL_STEP} (post − pre)", delta_png, top_p=TOP_P)
