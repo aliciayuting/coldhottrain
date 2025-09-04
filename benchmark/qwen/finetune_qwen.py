@@ -94,6 +94,7 @@ print(f"#GPUs: {num_gpus}  Global batch: {global_batch}  Iters/epoch: {iters_per
 
 
 # dump_out_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace("/", "_")}-{DATASET.replace('/', '_')}-grad_dump"
+dump_out_dir = f"/pscratch/sd/l/lsx/yyt_runs/{MODEL.replace("/", "_")}-{DATASET.replace('/', '_')}"
 dump_out_dir = f"{output_dir}/grad_dump"
 
 dump_cb = PerModuleGradDumper(
