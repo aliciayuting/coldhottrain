@@ -26,10 +26,18 @@ OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca
 SAMPLE_FRAC     = 1.0        # <1.0 to uniformly subsample to save RAM (e.g., 0.25)
 TOP_P           = 0.01       # annotate top 1% capture on each curve
 
+
 # Optional parameter-name filters for weight delta (regex). Keep None to include all weights.
-INCLUDE_PATTERNS = None      # e.g., [r"self_attn\\..*\\.weight", r"mlp\\..*\\.weight"]
-EXCLUDE_PATTERNS = None      # e.g., [r"lm_head", r"embed"]
-INCLUDE_BIAS     = False     # set True to include *.bias in ΔW
+# INCLUDE_PATTERNS = None      # e.g., [r"self_attn\\..*\\.weight", r"mlp\\..*\\.weight"]
+# EXCLUDE_PATTERNS = None      # e.g., [r"lm_head", r"embed"]
+INCLUDE_PATTERNS = [
+    r"\.layers\.\d+\.self_attn\.(q_proj|k_proj|v_proj|o_proj|qkv|qkv_proj)\.(weight|bias)$",
+    r"\.layers\.\d+\.mlp\.(gate_proj|up_proj|down_proj)\.(weight|bias)$",
+]
+EXCLUDE_PATTERNS = [
+    r"embed|lm_head|norm|layer_norm|ln|rope|rotary|position|alibi"
+]
+INCLUDE_BIAS     = True     # set True to include *.bias in ΔW
 
 # ========================
 # Script
