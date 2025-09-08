@@ -163,6 +163,7 @@ def load_grad_neuron_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray, 
         Wqg = _load_any_tensor(f)  # grad shape [out,in] for Linear
         # Expect shape like [d_model, n_heads*d_head]
         dm, cols = int(Wqg.shape[0]), int(Wqg.shape[1])
+        print(f"[DEBUG][head-meta] L{layer_id} q_proj.grad shape={Wqg.shape} -> rows={dm} cols={cols}")
         # Infer n_heads, head_dim from divisors
         candidates = [h for h in range(1, 256) if cols % h == 0]
         pick = None
@@ -209,24 +210,42 @@ def load_grad_neuron_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray, 
                 mlp_energy_per_layer[layer_id]["outgoing"] += e
             # (optionally include gate_proj if you want; by default we focus on up/down as neuron definition)
         elif sub == "self_attn":
-            # per-head: slice columns by head_dim
             meta = head_meta.get(layer_id, None)
             if meta is None:
                 continue
             n_heads, d_head = meta
-            if param in ["q_proj.weight", "k_proj.weight", "v_proj.weight", "o_proj.weight"]:
-                cols = G.shape[1]
-                if cols % (n_heads*d_head) != 0 and param != "o_proj.weight":
-                    warnings.warn(f"[L{layer_id}] {param} col mismatch; skip")
+            Gh = G.to(torch.float32)
+
+            if param in ["q_proj.weight", "k_proj.weight", "v_proj.weight"]:
+                # weights: [out=n_heads*d_head, in=d_model]  -> slice ROWS
+                rows = Gh.shape[0]
+                if rows != n_heads * d_head:
+                    warnings.warn(f"[L{layer_id}] {param} row mismatch; expected {n_heads*d_head}, got {rows}")
                     continue
-                # For o_proj we still slice columns into head_dim chunks (common layout)
-                Gh = G.to(torch.float32)
                 per_head = np.zeros(n_heads, dtype=np.float64)
                 for h in range(n_heads):
-                    sl = Gh[:, h*d_head:(h+1)*d_head]  # [d_model, d_head]
-                    per_head[h] += float((sl*sl).sum().item())
+                    sl = Gh[h*d_head:(h+1)*d_head, :]  # ROW slice
+                    per_head[h] += float((sl * sl).sum().item())
                 _ensure_attn(layer_id, "heads", n_heads)
                 attn_energy_per_layer[layer_id]["heads"] += per_head
+                print(f"[DEBUG][GRAD][L{layer_id}] {param} using ROW slices: Gh={tuple(Gh.shape)} " 
+                      f"expected rows={n_heads*d_head}, cols={Gh.shape[1]}")
+
+            elif param in ["o_proj.weight", "out_proj.weight"]:
+                # weights: [out=d_model, in=n_heads*d_head] -> slice COLUMNS
+                cols = Gh.shape[1]
+                if cols != n_heads * d_head:
+                    warnings.warn(f"[L{layer_id}] o_proj col mismatch; expected {n_heads*d_head}, got {cols}")
+                    continue
+                per_head = np.zeros(n_heads, dtype=np.float64)
+                for h in range(n_heads):
+                    sl = Gh[:, h*d_head:(h+1)*d_head]  # COLUMN slice
+                    per_head[h] += float((sl * sl).sum().item())
+                _ensure_attn(layer_id, "heads", n_heads)
+                attn_energy_per_layer[layer_id]["heads"] += per_head
+                print(f"[DEBUG][GRAD][L{layer_id}] {param} using COL slices: Gh={tuple(Gh.shape)} "
+                      f"expected cols={n_heads*d_head}, rows={Gh.shape[0]}")
+            
 
     # Combine incoming+outgoing for each MLP neuron
     mlp_all = []
@@ -243,6 +262,8 @@ def load_grad_neuron_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray, 
 
     mlp_neuron_grad = np.concatenate(mlp_all, axis=0) if len(mlp_all) else np.array([], dtype=np.float64)
     attn_head_grad  = np.concatenate(attn_all, axis=0) if len(attn_all) else np.array([], dtype=np.float64)
+    print(f"[DEBUG] grad MLP neurons: {sum(m.size for m in mlp_all) if mlp_all else 0} "
+          f"heads: {sum(v['heads'].size for v in attn_energy_per_layer.values() if 'heads' in v)}")
     return mlp_neuron_grad, attn_head_grad
 
 # ---------- weights pre/post: aggregate ΔW to neurons ----------
@@ -277,16 +298,17 @@ def _load_state_dict_any(ckpt_dir: str) -> Dict[str, torch.Tensor]:
     return state
 
 def _infer_heads_from_Wq(Wq: torch.Tensor) -> Tuple[int,int]:
-    dm, cols = int(Wq.shape[0]), int(Wq.shape[1])
-    candidates = [h for h in range(1, 256) if cols % h == 0]
+    # For q_proj: weight shape is [out = n_heads * d_head, in = d_model]
+    rows, cols = int(Wq.shape[0]), int(Wq.shape[1])
+    candidates = [h for h in range(1, 256) if rows % h == 0]
     for h in candidates:
-        d_h = cols // h
+        d_h = rows // h
         if 8 <= d_h <= 256:
             return h, d_h
     # fallback common dims
-    if cols % 64 == 0: return cols//64, 64
-    if cols % 128 == 0: return cols//128, 128
-    raise RuntimeError(f"Cannot infer (n_heads, head_dim) from q_proj shape {tuple(Wq.shape)}")
+    if rows % 64 == 0: return rows // 64, 64
+    if rows % 128 == 0: return rows // 128, 128
+    raise RuntimeError(f"Cannot infer (n_heads, d_head) from q_proj shape {tuple(Wq.shape)}")
 
 def load_delta_neuron_energy(weight_root: str, step: int) -> Tuple[np.ndarray, np.ndarray]:
     pre_dir  = os.path.join(weight_root, f"step{step:06d}_pre")
@@ -333,30 +355,46 @@ def load_delta_neuron_energy(weight_root: str, step: int) -> Tuple[np.ndarray, n
             Wo_pre = sd_pre[ok[0]]; Wo_post = sd_post[ok[0]]
             if Wq_pre.shape == Wq_post.shape and Wo_pre.shape == Wo_post.shape:
                 n_heads, d_head = _infer_heads_from_Wq(Wq_pre)
-                # helper to accumulate head energies
+                print(f"[DEBUG][DELTA][L{lid}] "
+                      f"q_pre={tuple(Wq_pre.shape)} q_post={tuple(Wq_post.shape)} "
+                      f"o_pre={tuple(Wo_pre.shape)} o_post={tuple(Wo_post.shape)} "
+                      f"n_heads={n_heads} d_head={d_head}")
+                def head_delta_rows(Wpre, Wpost):
+                    # q/k/v: [out=n_heads*d_head, in=d_model] -> slice ROWS
+                    Wd = (Wpost - Wpre).to(torch.float32)
+                    per = np.zeros(n_heads, dtype=np.float64)
+                    for h in range(n_heads):
+                        sl = Wd[h*d_head:(h+1)*d_head, :]
+                        per[h] += float((sl * sl).sum().item())
+                    return per
+
                 def head_delta_cols(Wpre, Wpost):
-                    Wd = (Wpost - Wpre).to(torch.float32)     # [d_model, n_heads*d_head]
+                    # o: [out=d_model, in=n_heads*d_head] -> slice COLUMNS
+                    Wd = (Wpost - Wpre).to(torch.float32)
                     per = np.zeros(n_heads, dtype=np.float64)
                     for h in range(n_heads):
                         sl = Wd[:, h*d_head:(h+1)*d_head]
-                        per[h] += float((sl*sl).sum().item())
+                        per[h] += float((sl * sl).sum().item())
                     return per
-                per_head = head_delta_cols(Wq_pre, Wq_post)
 
-                # add K/V if exist
+                per_head = head_delta_rows(Wq_pre, Wq_post)
+
                 kk = [k for k in d if k.endswith(".self_attn.k_proj.weight")]
                 vk = [k for k in d if k.endswith(".self_attn.v_proj.weight")]
                 if kk and kk[0] in sd_post:
-                    per_head += head_delta_cols(sd_pre[kk[0]], sd_post[kk[0]])
+                    per_head += head_delta_rows(sd_pre[kk[0]], sd_post[kk[0]])
                 if vk and vk[0] in sd_post:
-                    per_head += head_delta_cols(sd_pre[vk[0]], sd_post[vk[0]])
+                    per_head += head_delta_rows(sd_pre[vk[0]], sd_post[vk[0]])
 
-                # add O
                 per_head += head_delta_cols(Wo_pre, Wo_post)
                 attn_head_chunks.append(per_head)
+                print(f"[DEBUG][DELTA][L{lid}] per-head ΔW sum={per_head.sum():.3e}  "
+                      f"min={per_head.min():.3e}  max={per_head.max():.3e}")
 
     mlp_neuron_delta = np.concatenate(mlp_neuron_chunks, axis=0) if mlp_neuron_chunks else np.array([], dtype=np.float64)
     attn_head_delta  = np.concatenate(attn_head_chunks, axis=0) if attn_head_chunks else np.array([], dtype=np.float64)
+    print(f"[DEBUG] ΔW MLP neurons: {sum(x.size for x in mlp_neuron_chunks)} "
+          f"heads: {sum(x.size for x in attn_head_chunks)}")
     return mlp_neuron_delta, attn_head_delta
 
 # ---------- main ----------
