@@ -1,70 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-plot_neuron_delta_pre_post.py
+Neuron-level grad vs ΔW curves for a given training step.
 
-Build neuron-wise pre→post drift heatmaps across captured training steps.
+Definitions:
+- MLP neuron = one intermediate channel: row i of up_proj.weight (incoming) + column i of down_proj.weight (outgoing).
+- Attention neuron = one head: contiguous column slice of size head_dim in q/k/v/o projection matrices.
 
-What this does
---------------
-- Scans weight_dump/ for pairs: step{S}_pre and step{S}_post (created by your callback).
-- For each (layer, operator) you choose, loads weights from both checkpoints,
-  computes ΔW = post - pre, then reduces to a neuron-level vector:
-    * agg='col'  : per-column   L2^2 of ΔW     (default; 'neuron' ~ column in W1)
-    * agg='row'  : per-row      L2^2 of ΔW
-    * agg='head' : per-head     L2^2 of ΔW (contiguous column slices of size head_dim)
-- Writes a long CSV and a pivoted table per (layer, operator),
-  and plots heatmaps: rows = neuron index, cols = global_step S, values = L2^2 drift.
+This script:
+  1) Loads gradients at GLOBAL_STEP from grad_dump/index.csv, aggregates to neuron-level energy.
+  2) Loads weights from weight_dump/stepXXXXXX_pre and _post, computes ΔW, aggregates to neuron-level energy.
+  3) Plots Lorenz-style curves (grad vs ΔW) for MLP neurons and for attention heads (and an optional overall).
 
-Assumptions (Qwen/LLaMA-like)
------------------------------
-- State_dict keys like:
-  model.model.layers.{L}.self_attn.{q_proj,k_proj,v_proj,o_proj}.weight
-  model.model.layers.{L}.mlp.{gate_proj,up_proj,down_proj}.weight
-- Checkpoints: weight_dump/stepXXXXXX_pre and weight_dump/stepXXXXXX_post
-- Supports safetensors or pytorch_model.bin
-
-Edit the CONFIG section and run.
+No edits to training/callback code required.
 """
 
-# =======================
-# CONFIG (edit these)
-# =======================
-WEIGHT_ROOT = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
-OUT_DIR     = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/neuron_deltas"
+# ========================
+# Config (edit these)
+# ========================
+GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
+WEIGHT_ROOT     = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
+GLOBAL_STEP     = 200
+OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots_neuron"
 
-# Layers / operators to include
-LAYERS = list(range(0, 1))   # e.g., first 8 layers; change to your depth
-OPS = [
-    # attention
-    ("self_attn", "q_proj"),
-    ("self_attn", "k_proj"),
-    ("self_attn", "v_proj"),
-    ("self_attn", "o_proj"),
-    # MLP
-    ("mlp", "gate_proj"),
-    ("mlp", "up_proj"),
-    ("mlp", "down_proj"),
-]
+SAMPLE_FRAC     = 1.0      # element subsample before reduction (for very large tensors)
+TOP_P           = 0.01     # annotate top-1%
+INCLUDE_BIAS    = True     # match your callback (you set include_bias=True)
 
-# Neuron aggregation: 'col' (default), 'row', or 'head'
-AGG = "col"
+# If you want to include/exclude modules beyond the dumper’s default, tweak these
+INCLUDE_EMBEDDINGS = False   # your dumper sets also_embeddings=False; keep False to match
+INCLUDE_LM_HEAD    = False
 
-# If AGG == 'head', you may provide head meta to avoid inference
-HEADS_HINT = None  # e.g., {"n_heads": 8, "head_dim": 64}
-
-# Heatmap tick density
-MAX_X_TICKS = 12
-MAX_Y_TICKS = 30
-
-# =======================
-# Imports
-# =======================
-import os, re, glob, math, gc, warnings
+# ========================
+# Script
+# ========================
+import os, re, gc, math, warnings, glob, csv
+from typing import Dict, Tuple, List, Optional
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import torch
+import matplotlib.pyplot as plt
 
 try:
     from safetensors.torch import load_file as safetensors_load
@@ -72,231 +47,386 @@ try:
 except Exception:
     _HAVE_SAFETENSORS = False
 
+os.makedirs(OUT_DIR, exist_ok=True)
 
-# =======================
-# Helpers
-# =======================
-def _gather_steps(weight_root: str):
-    """Return sorted list of steps S with both dirs: step{S}_pre and step{S}_post."""
-    pre_dirs  = glob.glob(os.path.join(weight_root, "step*_pre"))
-    post_dirs = {os.path.basename(p).replace("_post", "") for p in glob.glob(os.path.join(weight_root, "step*_post"))}
-    steps = []
-    for p in pre_dirs:
-        base = os.path.basename(p)
-        if not base.endswith("_pre"):
+# ---------- basic loaders ----------
+def _load_any_tensor(path: str) -> torch.Tensor:
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext in [".pt", ".pth", ".bin"]:
+            obj = torch.load(path, map_location="cpu")
+            if isinstance(obj, torch.Tensor):
+                t = obj
+            elif isinstance(obj, dict) and "tensor" in obj:
+                t = obj["tensor"]
+            else:
+                if isinstance(obj, dict):
+                    t = None
+                    for v in obj.values():
+                        if isinstance(v, torch.Tensor):
+                            t = v; break
+                    if t is None:
+                        raise ValueError(f"No tensor found in {path}")
+                else:
+                    raise ValueError(f"Unsupported torch object in {path}: {type(obj)}")
+            return t.detach().to(dtype=torch.float32, device="cpu")
+        elif ext == ".npy":
+            arr = np.load(path, allow_pickle=False)
+            return torch.from_numpy(np.array(arr, dtype=np.float32))
+        elif ext == ".npz":
+            npz = np.load(path, allow_pickle=False)
+            key = list(npz.keys())[0]
+            return torch.from_numpy(np.array(npz[key], dtype=np.float32))
+        else:
+            raise ValueError(f"Unsupported file extension: {ext}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load tensor from {path}: {e}")
+
+def _tensor_sq_1d(t: torch.Tensor, sample_frac: float) -> np.ndarray:
+    # elementwise squared values as 1D (use only for element-wise paths)
+    x = t.reshape(-1)
+    if sample_frac < 1.0:
+        n = x.numel()
+        k = max(1, int(math.ceil(n * sample_frac)))
+        idx = torch.randperm(n)[:k]
+        x = x[idx]
+    return (x**2).to(torch.float32).cpu().numpy()
+
+# ---------- plotting ----------
+def _make_curve(values: np.ndarray):
+    s = np.sort(values)[::-1]
+    n = s.size
+    x = (np.arange(1, n+1, dtype=np.float64))/float(n)
+    y = np.cumsum(s, dtype=np.float64); y /= y[-1]
+    return x, y, n
+
+def _plot_curve(x, y, label, save_path, top_p=0.01, figsize=(5,4), dpi=200):
+    k = max(1, int(math.ceil(top_p * y.size)))
+    yk = y[k-1]
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    ax.plot(x, y, linewidth=2)
+    ax.axvline(top_p, linestyle="--", linewidth=1.5)
+    ax.axhline(yk, linestyle="--", linewidth=1.5)
+    ax.set_xlabel("Proportion of neurons", fontsize=12)
+    ax.set_ylabel("Cumulative energy (L2²)", fontsize=12)
+    ax.set_xlim(0.0, 1.0); ax.set_ylim(0.0, 1.0); ax.grid(False)
+    ax.legend([label], loc="lower right", frameon=True)
+    ax.text(top_p + 0.002, min(0.98, yk + 0.02),
+            f"Top {int(top_p*100)}%\n{yk*100:.1f}% of L2²",
+            fontsize=10, bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"))
+    plt.tight_layout(); plt.savefig(save_path, bbox_inches="tight"); plt.close(fig)
+    return float(yk)
+
+# ---------- grad: aggregate to neurons from index.csv ----------
+def load_grad_neuron_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Returns:
+      mlp_neuron_grad: concatenated per-neuron grad energy across layers
+      attn_head_grad:  concatenated per-head grad energy across layers
+    """
+    index_csv = os.path.join(grad_base_dir, "index.csv")
+    if not os.path.isfile(index_csv):
+        raise FileNotFoundError(index_csv)
+    df = pd.read_csv(index_csv)
+
+    rows = df[df["global_step"] == step]
+    if rows.empty:
+        raise ValueError(f"No entries for global_step={step} in index.csv")
+
+    # Collect by module name
+    # Files are stored as e.g. L07_self_attn_q_proj_weight.npy
+    # We'll load tensors and reduce to:
+    #  - MLP: per-row for up_proj.weight + per-col for down_proj.weight, then sum per neuron index
+    #  - ATTENTION: per-head by slicing columns into head_dim chunks
+    mlp_energy_per_layer: Dict[int, Dict[str, np.ndarray]] = {}
+    attn_energy_per_layer: Dict[int, Dict[str, np.ndarray]] = {}
+
+    def _ensure_mlp(layer_id, key, size):
+        d = mlp_energy_per_layer.setdefault(layer_id, {})
+        if key not in d:
+            d[key] = np.zeros(size, dtype=np.float64)
+
+    def _ensure_attn(layer_id, key, size):
+        d = attn_energy_per_layer.setdefault(layer_id, {})
+        if key not in d:
+            d[key] = np.zeros(size, dtype=np.float64)
+
+    # First pass: discover head_dim for attention per layer using q_proj shapes
+    head_meta: Dict[int, Tuple[int,int]] = {}  # layer_id -> (n_heads, head_dim)
+    for _, r in rows.iterrows():
+        sub = r["submodule"]; param = r["param"]; layer_id = int(r["layer"])
+        if sub != "self_attn" or param != "q_proj.weight":
             continue
-        stem = base[:-4]  # drop "_pre"
-        if stem in post_dirs:
-            m = re.match(r"step(\d{6})", stem)
-            if m:
-                steps.append(int(m.group(1)))
-    return sorted(set(steps))
+        f = os.path.join(grad_base_dir, r["file"])
+        if not os.path.isfile(f):
+            continue
+        Wqg = _load_any_tensor(f)  # grad shape [out,in] for Linear
+        # Expect shape like [d_model, n_heads*d_head]
+        dm, cols = int(Wqg.shape[0]), int(Wqg.shape[1])
+        # Infer n_heads, head_dim from divisors
+        candidates = [h for h in range(1, 256) if cols % h == 0]
+        pick = None
+        for h in candidates:
+            d_h = cols // h
+            if 8 <= d_h <= 256:  # reasonable head dims
+                pick = (h, d_h); break
+        if pick is None:
+            # fallback: guess a typical d_head like 64
+            d_h = 64 if cols % 64 == 0 else 128 if cols % 128 == 0 else None
+            if d_h is None:
+                warnings.warn(f"[L{layer_id}] could not infer head_dim from q_proj.grad shape {tuple(Wqg.shape)}")
+                continue
+            pick = (cols // d_h, d_h)
+        head_meta[layer_id] = pick
 
-def _gather_weight_files(ckpt_dir: str):
+    # Second pass: load grads and accumulate
+    for _, r in rows.iterrows():
+        layer_id = int(r["layer"])
+        sub = r["submodule"]
+        param = r["param"]
+        f = os.path.join(grad_base_dir, r["file"])
+        if not os.path.isfile(f):
+            warnings.warn(f"[grad] missing {f}"); continue
+        G = _load_any_tensor(f)  # [out,in]
+        if G.ndim != 2:
+            # ignore 1D (bias etc) unless INCLUDE_BIAS
+            if INCLUDE_BIAS and G.ndim == 1 and param.endswith(".bias"):
+                # bias: treat as its own 'neuron contribution' for matching index
+                pass
+            else:
+                continue
+
+        if sub == "mlp":
+            if param == "up_proj.weight":
+                # per-neuron incoming energy = row-wise sum
+                e = (G.to(torch.float32).pow(2).sum(dim=1)).cpu().numpy()  # [d_hidden]
+                _ensure_mlp(layer_id, "incoming", e.size)
+                mlp_energy_per_layer[layer_id]["incoming"] += e
+            elif param == "down_proj.weight":
+                # per-neuron outgoing energy = column-wise sum
+                e = (G.to(torch.float32).pow(2).sum(dim=0)).cpu().numpy()  # [d_hidden]
+                _ensure_mlp(layer_id, "outgoing", e.size)
+                mlp_energy_per_layer[layer_id]["outgoing"] += e
+            # (optionally include gate_proj if you want; by default we focus on up/down as neuron definition)
+        elif sub == "self_attn":
+            # per-head: slice columns by head_dim
+            meta = head_meta.get(layer_id, None)
+            if meta is None:
+                continue
+            n_heads, d_head = meta
+            if param in ["q_proj.weight", "k_proj.weight", "v_proj.weight", "o_proj.weight"]:
+                cols = G.shape[1]
+                if cols % (n_heads*d_head) != 0 and param != "o_proj.weight":
+                    warnings.warn(f"[L{layer_id}] {param} col mismatch; skip")
+                    continue
+                # For o_proj we still slice columns into head_dim chunks (common layout)
+                Gh = G.to(torch.float32)
+                per_head = np.zeros(n_heads, dtype=np.float64)
+                for h in range(n_heads):
+                    sl = Gh[:, h*d_head:(h+1)*d_head]  # [d_model, d_head]
+                    per_head[h] += float((sl*sl).sum().item())
+                _ensure_attn(layer_id, "heads", n_heads)
+                attn_energy_per_layer[layer_id]["heads"] += per_head
+
+    # Combine incoming+outgoing for each MLP neuron
+    mlp_all = []
+    for lid, d in mlp_energy_per_layer.items():
+        inc = d.get("incoming", None)
+        out = d.get("outgoing", None)
+        if inc is None and out is None:
+            continue
+        if inc is None:  mlp = out
+        elif out is None: mlp = inc
+        else:            mlp = inc + out
+        mlp_all.append(mlp)
+    attn_all = [v["heads"] for v in attn_energy_per_layer.values() if "heads" in v]
+
+    mlp_neuron_grad = np.concatenate(mlp_all, axis=0) if len(mlp_all) else np.array([], dtype=np.float64)
+    attn_head_grad  = np.concatenate(attn_all, axis=0) if len(attn_all) else np.array([], dtype=np.float64)
+    return mlp_neuron_grad, attn_head_grad
+
+# ---------- weights pre/post: aggregate ΔW to neurons ----------
+def _gather_weight_files(ckpt_dir: str) -> List[str]:
     safes = sorted(glob.glob(os.path.join(ckpt_dir, "*.safetensors")))
-    if safes:
+    if len(safes) > 0:
         return safes
-    pt = os.path.join(ckpt_dir, "pytorch_model.bin")
-    if os.path.isfile(pt):
-        return [pt]
-    raise FileNotFoundError(f"No weight files in {ckpt_dir}")
+    pt_bin = os.path.join(ckpt_dir, "pytorch_model.bin")
+    if os.path.isfile(pt_bin):
+        return [pt_bin]
+    raise FileNotFoundError(f"No weight files found in {ckpt_dir}")
 
-def _load_state_dict_any(ckpt_dir: str) -> dict:
+def _load_state_dict_any(ckpt_dir: str) -> Dict[str, torch.Tensor]:
     files = _gather_weight_files(ckpt_dir)
-    sd = {}
+    state = {}
     for f in files:
         ext = os.path.splitext(f)[1].lower()
         if ext == ".safetensors":
             if not _HAVE_SAFETENSORS:
-                raise RuntimeError("safetensors not installed; pip install safetensors")
-            part = safetensors_load(f, device="cpu")
-            for k, v in part.items():
-                sd[k] = v.detach().to(torch.float32)
-            del part
-        elif ext in [".bin", ".pt", ".pth"]:
+                raise RuntimeError("safetensors required; pip install safetensors")
+            sd = safetensors_load(f, device="cpu")
+            for k, v in sd.items():
+                state[k] = v.detach().to(torch.float32)
+            del sd
+        else:
             obj = torch.load(f, map_location="cpu")
             if not isinstance(obj, dict):
                 raise RuntimeError(f"Unexpected object in {f}: {type(obj)}")
             for k, v in obj.items():
                 if isinstance(v, torch.Tensor):
-                    sd[k] = v.detach().to(torch.float32)
-        else:
-            warnings.warn(f"Skipping {f}")
-    return sd
+                    state[k] = v.detach().to(torch.float32)
+    return state
 
-def _key_for(layer: int, sub: str, proj: str) -> str:
-    # Qwen/LLaMA path variant — adjust if your model differs
-    return f"model.model.layers.{layer}.{sub}.{proj}.weight"
+def _infer_heads_from_Wq(Wq: torch.Tensor) -> Tuple[int,int]:
+    dm, cols = int(Wq.shape[0]), int(Wq.shape[1])
+    candidates = [h for h in range(1, 256) if cols % h == 0]
+    for h in candidates:
+        d_h = cols // h
+        if 8 <= d_h <= 256:
+            return h, d_h
+    # fallback common dims
+    if cols % 64 == 0: return cols//64, 64
+    if cols % 128 == 0: return cols//128, 128
+    raise RuntimeError(f"Cannot infer (n_heads, head_dim) from q_proj shape {tuple(Wq.shape)}")
 
-def _reduce_neuron(delta: torch.Tensor, agg: str, heads_hint=None) -> np.ndarray:
-    """
-    delta: weight_post - weight_pre (tensor)
-    Returns 1D numpy array of neuron-level L2^2 deltas.
-    """
-    if delta.ndim == 1:
-        # bias: treat each element as its own "neuron"
-        return (delta.pow(2)).to(torch.float32).cpu().numpy()
+def load_delta_neuron_energy(weight_root: str, step: int) -> Tuple[np.ndarray, np.ndarray]:
+    pre_dir  = os.path.join(weight_root, f"step{step:06d}_pre")
+    post_dir = os.path.join(weight_root, f"step{step:06d}_post")
+    if not os.path.isdir(pre_dir):  raise FileNotFoundError(pre_dir)
+    if not os.path.isdir(post_dir): raise FileNotFoundError(post_dir)
 
-    if agg == "col":
-        # PyTorch Linear weight: [out_features, in_features]
-        # per-column: sum over out_features (dim=0) → length = in_features
-        return (delta.pow(2).sum(dim=0)).to(torch.float32).cpu().numpy()
+    sd_pre  = _load_state_dict_any(pre_dir)
+    sd_post = _load_state_dict_any(post_dir)
 
-    if agg == "row":
-        # per-row: sum over in_features (dim=1) → length = out_features
-        return (delta.pow(2).sum(dim=1)).to(torch.float32).cpu().numpy()
+    # collect per-layer MLP and attention keys
+    # Typical keys: model.model.layers.{L}.mlp.up_proj.weight etc.
+    layer_regex = re.compile(r"\.layers\.(\d+)\.")
+    mlp_neuron_chunks = []
+    attn_head_chunks = []
 
-    if agg == "head":
-        # Slice contiguous column chunks of size head_dim; sum each chunk
-        cols = delta.shape[1]
-        if heads_hint is None:
-            pick = None
-            for h in range(1, 256):
-                if cols % h == 0:
-                    d = cols // h
-                    if 16 <= d <= 256:
-                        pick = (h, d); break
-            if pick is None:
-                raise RuntimeError(f"Cannot infer (n_heads, head_dim) from shape {tuple(delta.shape)}")
-            n_heads, head_dim = pick
-        else:
-            n_heads = int(heads_hint["n_heads"]); head_dim = int(heads_hint["head_dim"])
-            assert cols == n_heads * head_dim, f"columns {cols} != n_heads*head_dim"
+    # Group by layer
+    keys_by_layer: Dict[int, Dict[str, torch.Tensor]] = {}
+    for k, w in sd_pre.items():
+        m = layer_regex.search(k)
+        if not m: continue
+        lid = int(m.group(1))
+        d = keys_by_layer.setdefault(lid, {})
+        d[k] = w
 
-        parts = []
-        W = delta.to(torch.float32)
-        for h in range(n_heads):
-            sl = W[:, h*head_dim:(h+1)*head_dim]
-            parts.append(sl.pow(2).sum().item())
-        return np.array(parts, dtype=np.float64)
+    for lid, d in keys_by_layer.items():
+        # MLP up/down
+        up_k   = [k for k in d if k.endswith(".mlp.up_proj.weight")]
+        down_k = [k for k in d if k.endswith(".mlp.down_proj.weight")]
+        if up_k and up_k[0] in sd_post and down_k and down_k[0] in sd_post:
+            Wup_pre   = sd_pre[up_k[0]];   Wup_post   = sd_post[up_k[0]]
+            Wdown_pre = sd_pre[down_k[0]]; Wdown_post = sd_post[down_k[0]]
+            if Wup_pre.shape == Wup_post.shape and Wdown_pre.shape == Wdown_post.shape:
+                Dup   = (Wup_post - Wup_pre)     # [d_hidden, d_model]  (row = neuron incoming)
+                Ddown = (Wdown_post - Wdown_pre) # [d_model, d_hidden]  (col = neuron outgoing)
+                per_neuron = (Dup.pow(2).sum(dim=1) + Ddown.pow(2).sum(dim=0)).cpu().numpy()
+                mlp_neuron_chunks.append(per_neuron)
 
-    raise ValueError(f"Unknown agg={agg}")
+        # Attention q/k/v/o
+        qk = [k for k in d if k.endswith(".self_attn.q_proj.weight")]
+        ok = [k for k in d if k.endswith(".self_attn.o_proj.weight") or k.endswith(".self_attn.out_proj.weight")]
+        if qk and ok and qk[0] in sd_post and ok[0] in sd_post:
+            Wq_pre = sd_pre[qk[0]]; Wq_post = sd_post[qk[0]]
+            Wo_pre = sd_pre[ok[0]]; Wo_post = sd_post[ok[0]]
+            if Wq_pre.shape == Wq_post.shape and Wo_pre.shape == Wo_post.shape:
+                n_heads, d_head = _infer_heads_from_Wq(Wq_pre)
+                # helper to accumulate head energies
+                def head_delta_cols(Wpre, Wpost):
+                    Wd = (Wpost - Wpre).to(torch.float32)     # [d_model, n_heads*d_head]
+                    per = np.zeros(n_heads, dtype=np.float64)
+                    for h in range(n_heads):
+                        sl = Wd[:, h*d_head:(h+1)*d_head]
+                        per[h] += float((sl*sl).sum().item())
+                    return per
+                per_head = head_delta_cols(Wq_pre, Wq_post)
 
-def autoscale_ticks(ax, values, axis="x", max_ticks=12):
-    n = len(values)
-    if n <= max_ticks:
-        ticks = np.arange(n)
-    else:
-        ticks = np.unique(np.linspace(0, n - 1, max_ticks, dtype=int))
-    labels = [str(values[i]) for i in ticks]
-    if axis == "x":
-        ax.set_xticks(ticks); ax.set_xticklabels(labels, rotation=0)
-    else:
-        ax.set_yticks(ticks); ax.set_yticklabels(labels)
+                # add K/V if exist
+                kk = [k for k in d if k.endswith(".self_attn.k_proj.weight")]
+                vk = [k for k in d if k.endswith(".self_attn.v_proj.weight")]
+                if kk and kk[0] in sd_post:
+                    per_head += head_delta_cols(sd_pre[kk[0]], sd_post[kk[0]])
+                if vk and vk[0] in sd_post:
+                    per_head += head_delta_cols(sd_pre[vk[0]], sd_post[vk[0]])
 
-# =======================
-# Build long table per (layer, op)
-# =======================
-def build_neuron_delta_long(weight_root: str, layers, ops, agg="col", heads_hint=None) -> pd.DataFrame:
-    steps = _gather_steps(weight_root)
-    if not steps:
-        raise SystemExit(f"No step*_pre/post pairs found in {weight_root}")
+                # add O
+                per_head += head_delta_cols(Wo_pre, Wo_post)
+                attn_head_chunks.append(per_head)
 
-    rows = []
-    for S in steps:
-        pre_dir  = os.path.join(weight_root, f"step{S:06d}_pre")
-        post_dir = os.path.join(weight_root, f"step{S:06d}_post")
-        sd_pre   = _load_state_dict_any(pre_dir)
-        sd_post  = _load_state_dict_any(post_dir)
+    mlp_neuron_delta = np.concatenate(mlp_neuron_chunks, axis=0) if mlp_neuron_chunks else np.array([], dtype=np.float64)
+    attn_head_delta  = np.concatenate(attn_head_chunks, axis=0) if attn_head_chunks else np.array([], dtype=np.float64)
+    return mlp_neuron_delta, attn_head_delta
 
-        for layer in layers:
-            for sub, proj in ops:
-                key = _key_for(layer, sub, proj)
-                w_pre  = sd_pre.get(key, None)
-                w_post = sd_post.get(key, None)
-                if w_pre is None or w_post is None:
-                    # silently skip missing modules (fused qkv, no bias, etc.)
-                    continue
-                if w_pre.shape != w_post.shape:
-                    warnings.warn(f"[skip] shape mismatch at step {S}: {key} {tuple(w_pre.shape)} vs {tuple(w_post.shape)}")
-                    continue
-
-                delta = (w_post - w_pre)
-                vec = _reduce_neuron(delta, agg=agg, heads_hint=heads_hint)  # 1D array
-                for idx, val in enumerate(vec):
-                    rows.append({
-                        "global_step": S,
-                        "layer": layer,
-                        "operator": f"{sub}.{proj}",
-                        "index": idx,
-                        "l2_abs_change": float(val),
-                        "shape": str(tuple(w_pre.shape)),
-                        "agg": agg
-                    })
-
-        # free per-step dicts
-        del sd_pre, sd_post; gc.collect()
-
-    df = pd.DataFrame(rows)
-    if df.empty:
-        raise SystemExit("No data collected (check LAYERS/OPS and key patterns).")
-    return df.sort_values(["layer", "operator", "index", "global_step"]).reset_index(drop=True)
-
-def build_pivot(df_op: pd.DataFrame):
-    """
-    Given rows for one operator (fixed layer & operator),
-    return (P, steps) — pivot index=index(neuron), columns=global_step, values=l2_abs_change
-    """
-    df_op = df_op.copy()
-    df_op["index"] = df_op["index"].astype(int)
-    df_op["global_step"] = df_op["global_step"].astype(int)
-    P = (df_op.pivot(index="index", columns="global_step", values="l2_abs_change")
-                .sort_index(axis=0)
-                .sort_index(axis=1))
-    steps = P.columns.to_numpy()
-    return P, steps
-
-def plot_heatmap(P: pd.DataFrame, steps: np.ndarray, title: str, out_png: str):
-    M = P.to_numpy(dtype=np.float32)
-    M_masked = np.ma.masked_invalid(M)
-
-    fig = plt.figure(figsize=(9, 6))
-    ax = plt.gca()
-    im = ax.imshow(M_masked, origin="lower", aspect="auto")
-    cbar = plt.colorbar(im)
-    cbar.set_label("L2 drift (neuron-wise) pre→post")
-
-    ax.set_xlabel("Capture step (pre→post)")
-    ax.set_ylabel("Neuron index")
-
-    autoscale_ticks(ax, steps, axis="x", max_ticks=MAX_X_TICKS)
-    autoscale_ticks(ax, np.arange(M.shape[0]), axis="y", max_ticks=MAX_Y_TICKS)
-
-    ax.set_title(title)
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(out_png), exist_ok=True)
-    plt.savefig(out_png, dpi=150)
-    plt.show()
-    plt.close(fig)
-
-# =======================
-# Main
-# =======================
+# ---------- main ----------
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    print(f"[scan] reading step*_pre/_post pairs in: {WEIGHT_ROOT}")
+    # 1) Grad neuron energies
+    mlp_g, attn_g = load_grad_neuron_energy(GRAD_BASE_DIR, GLOBAL_STEP)
+    print(f"[DEBUG] grad: MLP neurons={mlp_g.size}, ATTN heads={attn_g.size}, totals L2²: "
+          f"MLP={mlp_g.sum():.3e}, ATTN={attn_g.sum():.3e}")
 
-    df = build_neuron_delta_long(WEIGHT_ROOT, LAYERS, OPS, agg=AGG, heads_hint=HEADS_HINT)
+    # 2) ΔW neuron energies
+    mlp_d, attn_d = load_delta_neuron_energy(WEIGHT_ROOT, GLOBAL_STEP)
+    print(f"[DEBUG] ΔW:   MLP neurons={mlp_d.size}, ATTN heads={attn_d.size}, totals L2²: "
+          f"MLP={mlp_d.sum():.3e}, ATTN={attn_d.sum():.3e}")
 
-    # Save the long-form table
-    long_csv = os.path.join(OUT_DIR, f"neuron_delta_long_agg-{AGG}.csv")
-    df.to_csv(long_csv, index=False)
-    print(f"[saved] long table → {long_csv}  (rows={len(df):,})")
+    # 3) Plot MLP neurons
+    if mlp_g.size and mlp_d.size:
+        xg, yg, _ = _make_curve(mlp_g)
+        xd, yd, _ = _make_curve(mlp_d)
+        fig, ax = plt.subplots(figsize=(5,4), dpi=200)
+        ax.plot(xg, yg, label="Grad (MLP neurons)", linewidth=2)
+        ax.plot(xd, yd, label="ΔW (MLP neurons)", linewidth=2, linestyle="--")
+        ax.set_xlabel("Proportion of neurons"); ax.set_ylabel("Cumulative L2²")
+        ax.set_xlim(0,1); ax.set_ylim(0,1); ax.legend(loc="lower right"); ax.grid(False)
+        plt.tight_layout()
+        path = os.path.join(OUT_DIR, f"neurons_mlp_grad_vs_delta_step{GLOBAL_STEP:06d}.png")
+        plt.savefig(path, bbox_inches="tight"); plt.close(fig)
+        print(f"[PLOT] MLP neurons overlay -> {path}")
 
-    # For each (layer, operator), build a pivot + heatmap
-    for layer in sorted(df["layer"].unique()):
-        for op in sorted(df[df["layer"] == layer]["operator"].unique()):
-            df_op = df[(df["layer"] == layer) & (df["operator"] == op)]
-            if df_op.empty:
-                continue
-            P, steps = build_pivot(df_op)
-            table_path = os.path.join(OUT_DIR, f"table_layer{layer}_{op.replace('.','_')}_agg-{AGG}.csv")
-            P.to_csv(table_path, float_format="%.6g")
-            print(f"[saved] pivot → {table_path}  (rows={P.shape[0]}, cols={P.shape[1]})")
+        # standalone curves
+        gcap = _plot_curve(xg, yg, f"Grad (MLP neurons) @ step {GLOBAL_STEP}",
+                           os.path.join(OUT_DIR, f"neurons_mlp_grad_step{GLOBAL_STEP:06d}.png"), top_p=TOP_P)
+        dcap = _plot_curve(xd, yd, f"ΔW (MLP neurons) @ step {GLOBAL_STEP}",
+                           os.path.join(OUT_DIR, f"neurons_mlp_delta_step{GLOBAL_STEP:06d}.png"), top_p=TOP_P)
+        print(f"[MLP] top {int(TOP_P*100)}% capture: grad={gcap*100:.2f}%  ΔW={dcap*100:.2f}%")
 
-            png_path = os.path.join(OUT_DIR, f"heatmap_layer{layer}_{op.replace('.','_')}_agg-{AGG}.png")
-            title = f"Layer {layer} · {op} · agg={AGG}"
-            plot_heatmap(P, steps, title, png_path)
+    # 4) Plot ATTENTION heads
+    if attn_g.size and attn_d.size:
+        xg, yg, _ = _make_curve(attn_g)
+        xd, yd, _ = _make_curve(attn_d)
+        fig, ax = plt.subplots(figsize=(5,4), dpi=200)
+        ax.plot(xg, yg, label="Grad (attention heads)", linewidth=2)
+        ax.plot(xd, yd, label="ΔW (attention heads)", linewidth=2, linestyle="--")
+        ax.set_xlabel("Proportion of heads"); ax.set_ylabel("Cumulative L2²")
+        ax.set_xlim(0,1); ax.set_ylim(0,1); ax.legend(loc="lower right"); ax.grid(False)
+        plt.tight_layout()
+        path = os.path.join(OUT_DIR, f"neurons_attn_grad_vs_delta_step{GLOBAL_STEP:06d}.png")
+        plt.savefig(path, bbox_inches="tight"); plt.close(fig)
+        print(f"[PLOT] ATTENTION heads overlay -> {path}")
+
+        gcap = _plot_curve(xg, yg, f"Grad (attention heads) @ step {GLOBAL_STEP}",
+                           os.path.join(OUT_DIR, f"neurons_attn_grad_step{GLOBAL_STEP:06d}.png"), top_p=TOP_P)
+        dcap = _plot_curve(xd, yd, f"ΔW (attention heads) @ step {GLOBAL_STEP}",
+                           os.path.join(OUT_DIR, f"neurons_attn_delta_step{GLOBAL_STEP:06d}.png"), top_p=TOP_P)
+        print(f"[ATTN] top {int(TOP_P*100)}% capture: grad={gcap*100:.2f}%  ΔW={dcap*100:.2f}%")
+
+    # 5) Optional: overall neurons (concatenate MLP + heads)
+    if (mlp_g.size or attn_g.size) and (mlp_d.size or attn_d.size):
+        g_all = np.concatenate([x for x in [mlp_g, attn_g] if x.size], axis=0)
+        d_all = np.concatenate([x for x in [mlp_d, attn_d] if x.size], axis=0)
+        xg, yg, _ = _make_curve(g_all)
+        xd, yd, _ = _make_curve(d_all)
+        fig, ax = plt.subplots(figsize=(5,4), dpi=200)
+        ax.plot(xg, yg, label="Grad (all neurons)", linewidth=2)
+        ax.plot(xd, yd, label="ΔW (all neurons)", linewidth=2, linestyle="--")
+        ax.set_xlabel("Proportion of neurons"); ax.set_ylabel("Cumulative L2²")
+        ax.set_xlim(0,1); ax.set_ylim(0,1); ax.legend(loc="lower right"); ax.grid(False)
+        plt.tight_layout()
+        path = os.path.join(OUT_DIR, f"neurons_all_grad_vs_delta_step{GLOBAL_STEP:06d}.png")
+        plt.savefig(path, bbox_inches="tight"); plt.close(fig)
+        print(f"[PLOT] OVERALL neurons overlay -> {path}")
 
 if __name__ == "__main__":
     main()
