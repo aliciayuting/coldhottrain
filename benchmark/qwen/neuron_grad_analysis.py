@@ -605,11 +605,17 @@ def collect_annotated_neurons(step: int):
             tot = inc + out
             for i in range(tot.size):
                 recs.append(dict(kind="MLP", layer=lid, unit=i, component="mlp_up",
-                                 grad=0.0, delta_q=float(inc[i]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=0.0, delta_k=0.0, delta_v=0.0, delta_o=0.0,
+                                delta_total=float(inc[i])))
                 recs.append(dict(kind="MLP", layer=lid, unit=i, component="mlp_down",
-                                 grad=0.0, delta_q=float(out[i]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=0.0, delta_k=0.0, delta_v=0.0, delta_o=0.0,
+                                delta_total=float(out[i])))
                 recs.append(dict(kind="MLP", layer=lid, unit=i, component="total",
-                                 grad=0.0, delta_q=float(tot[i]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=0.0, delta_k=0.0, delta_v=0.0, delta_o=0.0,
+                                delta_total=float(tot[i])))
 
         # ATTN ΔW (GQA-aware)
         qk = f"model.model.layers.{lid}.self_attn.q_proj.weight"
@@ -656,38 +662,48 @@ def collect_annotated_neurons(step: int):
             tot = per_q + per_k + per_v + per_o
             for h in range(n_heads):
                 recs.append(dict(kind="ATTN", layer=lid, unit=h, component="q",
-                                 grad=0.0, delta_q=float(per_q[h]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=float(per_q[h]), delta_k=0.0, delta_v=0.0, delta_o=0.0,
+                                delta_total=float(per_q[h])))
                 recs.append(dict(kind="ATTN", layer=lid, unit=h, component="k",
-                                 grad=0.0, delta_q=float(per_k[h]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=0.0, delta_k=float(per_k[h]), delta_v=0.0, delta_o=0.0,
+                                delta_total=float(per_k[h])))
                 recs.append(dict(kind="ATTN", layer=lid, unit=h, component="v",
-                                 grad=0.0, delta_q=float(per_v[h]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=0.0, delta_k=0.0, delta_v=float(per_v[h]), delta_o=0.0,
+                                delta_total=float(per_v[h])))
                 recs.append(dict(kind="ATTN", layer=lid, unit=h, component="o",
-                                 grad=0.0, delta_q=float(per_o[h]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=0.0, delta_k=0.0, delta_v=0.0, delta_o=float(per_o[h]),
+                                delta_total=float(per_o[h])))
                 recs.append(dict(kind="ATTN", layer=lid, unit=h, component="total",
-                                 grad=0.0, delta_q=float(tot[h]), delta_k=0, delta_v=0, delta_o=0))
+                                grad=0.0,
+                                delta_q=0.0, delta_k=0.0, delta_v=0.0, delta_o=0.0,
+                                delta_total=float(tot[h])))
 
-    # Final tidy: add delta_total column
-    for r in recs:
-        # For MLP we packed ΔW totals in delta_q; for ATTN we split q/k/v/o
-        if r["kind"] == "MLP":
-            r["delta_total"] = r["delta_q"] if r["component"] in ("mlp_up","mlp_down","total") else 0.0
-        else:
-            if r["component"] == "total":
-                # for convenience recompute from components later during ranking
-                r["delta_total"] = r["delta_q"]  # will overwrite below after we collect per-head rows
-            else:
-                r["delta_total"] = r["delta_q"]
+    # # Final tidy: add delta_total column
+    # for r in recs:
+    #     # For MLP we packed ΔW totals in delta_q; for ATTN we split q/k/v/o
+    #     if r["kind"] == "MLP":
+    #         r["delta_total"] = r["delta_q"] if r["component"] in ("mlp_up","mlp_down","total") else 0.0
+    #     else:
+    #         if r["component"] == "total":
+    #             # for convenience recompute from components later during ranking
+    #             r["delta_total"] = r["delta_q"]  # will overwrite below after we collect per-head rows
+    #         else:
+    #             r["delta_total"] = r["delta_q"]
 
     # For attention, ensure 'total' rows truly hold q+k+v+o
     df_recs = pd.DataFrame.from_records(recs)
-    if not df_recs.empty:
-        # Build a per-(ATTN,layer,unit) sum for components
-        mask_attn = (df_recs["kind"] == "ATTN")
-        comp_sum = (df_recs[mask_attn & df_recs["component"].isin(["q","k","v","o"])]
-                    .groupby(["kind","layer","unit"])["delta_total"].sum().rename("delta_attn_sum"))
-        df_recs = df_recs.merge(comp_sum, how="left", left_on=["kind","layer","unit"], right_index=True)
-        df_recs.loc[mask_attn & (df_recs["component"]=="total"), "delta_total"] = df_recs.loc[mask_attn & (df_recs["component"]=="total"), "delta_attn_sum"].fillna(0.0)
-        df_recs.drop(columns=["delta_attn_sum"], inplace=True)
+    # if not df_recs.empty:
+    #     # Build a per-(ATTN,layer,unit) sum for components
+    #     mask_attn = (df_recs["kind"] == "ATTN")
+    #     comp_sum = (df_recs[mask_attn & df_recs["component"].isin(["q","k","v","o"])]
+    #                 .groupby(["kind","layer","unit"])["delta_total"].sum().rename("delta_attn_sum"))
+    #     df_recs = df_recs.merge(comp_sum, how="left", left_on=["kind","layer","unit"], right_index=True)
+    #     df_recs.loc[mask_attn & (df_recs["component"]=="total"), "delta_total"] = df_recs.loc[mask_attn & (df_recs["component"]=="total"), "delta_attn_sum"].fillna(0.0)
+    #     df_recs.drop(columns=["delta_attn_sum"], inplace=True)
 
     return df_recs
 
