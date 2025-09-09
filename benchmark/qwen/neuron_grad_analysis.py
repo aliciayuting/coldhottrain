@@ -21,7 +21,7 @@ No edits to training/callback code required.
 GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
 WEIGHT_ROOT     = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
 GLOBAL_STEP     = 200
-OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots_neuron"
+# OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots_neuron"
 
 SAMPLE_FRAC     = 1.0      # element subsample before reduction (for very large tensors)
 TOP_P           = 0.01     # annotate top-1%

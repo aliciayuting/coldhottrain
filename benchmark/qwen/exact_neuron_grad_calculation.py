@@ -8,7 +8,7 @@ import os, warnings
 
 TOP_K = 200  # how many units to list in CSV/plots
 GLOBAL_STEP     = 200
-# OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/exact_neuron"
+OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/exact_neuron"
 CSV_OUT = os.path.join(OUT_DIR, f"topK_neurons_step{GLOBAL_STEP:06d}.csv")
 SCATTER_PNG = os.path.join(OUT_DIR, f"topK_scatter_step{GLOBAL_STEP:06d}.png")
 BARS_PNG = os.path.join(OUT_DIR, f"top50_bars_step{GLOBAL_STEP:06d}.png")
