@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+from exact_neuron_grad_calculation import *
 
 try:
     from safetensors.torch import load_file as safetensors_load
@@ -502,6 +503,8 @@ def main():
         path = os.path.join(OUT_DIR, f"neurons_all_grad_vs_delta_step{GLOBAL_STEP:06d}.png")
         plt.savefig(path, bbox_inches="tight"); plt.close(fig)
         print(f"[PLOT] OVERALL neurons overlay -> {path}")
+        
+    export_and_plot_topK(GLOBAL_STEP, TOP_K)
 
 if __name__ == "__main__":
     main()
