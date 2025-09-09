@@ -5,7 +5,7 @@ Neuron-level grad vs ΔW curves for a given training step.
 
 Definitions:
 - MLP neuron = one intermediate channel: row i of up_proj.weight (incoming) + column i of down_proj.weight (outgoing).
-- Attention neuron = one head: contiguous column slice of size head_dim in q/k/v/o projection matrices.
+- Attention neuron = one head (GQA-aware): q/k/v use contiguous ROW slices; o uses contiguous COLUMN slices. If n_kv_heads < n_heads, K/V per-head energies are broadcast to the Q/O head groups (group_size = n_heads // n_kv_heads).
 
 This script:
   1) Loads gradients at GLOBAL_STEP from grad_dump/index.csv, aggregates to neuron-level energy.
@@ -48,6 +48,29 @@ except Exception:
     _HAVE_SAFETENSORS = False
 
 os.makedirs(OUT_DIR, exist_ok=True)
+
+
+def _infer_gqa_meta(q_rows: int, kv_rows: int | None) -> tuple[int, int, int]:
+    """Infer (n_heads, n_kv, d_head) from q_rows and optional kv_rows.
+    Prefers small/common head_dims typical for LLMs.
+    """
+    preferred = [32, 40, 48, 64, 80, 96, 104, 112, 128, 160, 192, 224, 256]
+    for d in preferred:
+        if q_rows % d == 0 and (kv_rows is None or kv_rows % d == 0):
+            n_heads = q_rows // d
+            n_kv = (kv_rows // d) if kv_rows is not None else n_heads
+            return n_heads, n_kv, d
+    # fallback: try any divisor 16..256
+    for d in range(16, 257):
+        if q_rows % d == 0 and (kv_rows is None or kv_rows % d == 0):
+            n_heads = q_rows // d
+            n_kv = (kv_rows // d) if kv_rows is not None else n_heads
+            return n_heads, n_kv, d
+    # last resort: treat as MHA
+    d = max(1, min(128, q_rows))
+    n_heads = max(1, q_rows // d)
+    n_kv = n_heads if kv_rows is None else max(1, kv_rows // d)
+    return n_heads, n_kv, d
 
 # ---------- basic loaders ----------
 def _load_any_tensor(path: str) -> torch.Tensor:
@@ -151,34 +174,33 @@ def load_grad_neuron_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray, 
         if key not in d:
             d[key] = np.zeros(size, dtype=np.float64)
 
-    # First pass: discover head_dim for attention per layer using q_proj shapes
-    head_meta: Dict[int, Tuple[int,int]] = {}  # layer_id -> (n_heads, head_dim)
+    # First pass (GQA-aware): collect q_rows and kv_rows per layer, then infer (n_heads, n_kv, d_head)
+    head_meta: Dict[int, Tuple[int,int,int]] = {}
+    q_rows_layer: Dict[int, int] = {}
+    kv_rows_layer: Dict[int, int] = {}
     for _, r in rows.iterrows():
         sub = r["submodule"]; param = r["param"]; layer_id = int(r["layer"])
-        if sub != "self_attn" or param != "q_proj.weight":
+        if sub != "self_attn":
             continue
         f = os.path.join(grad_base_dir, r["file"])
         if not os.path.isfile(f):
             continue
-        Wqg = _load_any_tensor(f)  # grad shape [out,in] for Linear
-        # Expect shape like [d_model, n_heads*d_head]
-        dm, cols = int(Wqg.shape[0]), int(Wqg.shape[1])
-        print(f"[DEBUG][head-meta] L{layer_id} q_proj.grad shape={Wqg.shape} -> rows={dm} cols={cols}")
-        # Infer n_heads, head_dim from divisors
-        candidates = [h for h in range(1, 256) if cols % h == 0]
-        pick = None
-        for h in candidates:
-            d_h = cols // h
-            if 8 <= d_h <= 256:  # reasonable head dims
-                pick = (h, d_h); break
-        if pick is None:
-            # fallback: guess a typical d_head like 64
-            d_h = 64 if cols % 64 == 0 else 128 if cols % 128 == 0 else None
-            if d_h is None:
-                warnings.warn(f"[L{layer_id}] could not infer head_dim from q_proj.grad shape {tuple(Wqg.shape)}")
-                continue
-            pick = (cols // d_h, d_h)
-        head_meta[layer_id] = pick
+        if param == "q_proj.weight":
+            G = _load_any_tensor(f)
+            q_rows_layer[layer_id] = int(G.shape[0])
+            print(f"[DEBUG][head-meta] L{layer_id} q_proj.grad shape={G.shape} -> rows={int(G.shape[0])} cols={int(G.shape[1])}")
+        elif param in ("k_proj.weight", "v_proj.weight"):
+            G = _load_any_tensor(f)
+            kv_rows_layer[layer_id] = max(kv_rows_layer.get(layer_id, 0), int(G.shape[0]))
+
+    for lid, q_rows in q_rows_layer.items():
+        kv_rows = kv_rows_layer.get(lid, None)
+        n_heads, n_kv, d_head = _infer_gqa_meta(q_rows, kv_rows)
+        head_meta[lid] = (n_heads, n_kv, d_head)
+        if kv_rows is None:
+            print(f"[DEBUG][GQA] L{lid} q_rows={q_rows} -> n_heads={n_heads} d_head={d_head} (MHA assumption; no kv_rows)")
+        else:
+            print(f"[DEBUG][GQA] L{lid} q_rows={q_rows} kv_rows={kv_rows} -> n_heads={n_heads} n_kv={n_kv} d_head={d_head}")
 
     # Second pass: load grads and accumulate
     for _, r in rows.iterrows():
@@ -213,38 +235,49 @@ def load_grad_neuron_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray, 
             meta = head_meta.get(layer_id, None)
             if meta is None:
                 continue
-            n_heads, d_head = meta
+            n_heads, n_kv, d_head = meta
             Gh = G.to(torch.float32)
 
-            if param in ["q_proj.weight", "k_proj.weight", "v_proj.weight"]:
-                # weights: [out=n_heads*d_head, in=d_model]  -> slice ROWS
+            if param == "q_proj.weight":
                 rows = Gh.shape[0]
                 if rows != n_heads * d_head:
-                    warnings.warn(f"[L{layer_id}] {param} row mismatch; expected {n_heads*d_head}, got {rows}")
+                    warnings.warn(f"[L{layer_id}] q_proj row mismatch; expected {n_heads*d_head}, got {rows}")
                     continue
-                per_head = np.zeros(n_heads, dtype=np.float64)
+                per_head_q = np.zeros(n_heads, dtype=np.float64)
                 for h in range(n_heads):
-                    sl = Gh[h*d_head:(h+1)*d_head, :]  # ROW slice
-                    per_head[h] += float((sl * sl).sum().item())
+                    sl = Gh[h*d_head:(h+1)*d_head, :]
+                    per_head_q[h] = float((sl * sl).sum().item())
                 _ensure_attn(layer_id, "heads", n_heads)
-                attn_energy_per_layer[layer_id]["heads"] += per_head
-                print(f"[DEBUG][GRAD][L{layer_id}] {param} using ROW slices: Gh={tuple(Gh.shape)} " 
-                      f"expected rows={n_heads*d_head}, cols={Gh.shape[1]}")
+                attn_energy_per_layer[layer_id]["heads"] += per_head_q
+                print(f"[DEBUG][GRAD][L{layer_id}] q ROW slices: {tuple(Gh.shape)} -> n_heads={n_heads} d_head={d_head}")
+
+            elif param in ["k_proj.weight", "v_proj.weight"]:
+                rows = Gh.shape[0]
+                if rows != n_kv * d_head:
+                    warnings.warn(f"[L{layer_id}] {param} row mismatch; expected {n_kv*d_head}, got {rows}")
+                    continue
+                per_kv = np.zeros(n_kv, dtype=np.float64)
+                for h in range(n_kv):
+                    sl = Gh[h*d_head:(h+1)*d_head, :]
+                    per_kv[h] = float((sl * sl).sum().item())
+                group_size = max(1, n_heads // n_kv)
+                per_kv_expanded = np.repeat(per_kv, group_size)[:n_heads]
+                _ensure_attn(layer_id, "heads", n_heads)
+                attn_energy_per_layer[layer_id]["heads"] += per_kv_expanded
+                print(f"[DEBUG][GRAD][L{layer_id}] {param} ROW slices: {tuple(Gh.shape)} -> n_kv={n_kv} d_head={d_head} broadcast x{group_size}")
 
             elif param in ["o_proj.weight", "out_proj.weight"]:
-                # weights: [out=d_model, in=n_heads*d_head] -> slice COLUMNS
                 cols = Gh.shape[1]
                 if cols != n_heads * d_head:
                     warnings.warn(f"[L{layer_id}] o_proj col mismatch; expected {n_heads*d_head}, got {cols}")
                     continue
-                per_head = np.zeros(n_heads, dtype=np.float64)
+                per_head_o = np.zeros(n_heads, dtype=np.float64)
                 for h in range(n_heads):
-                    sl = Gh[:, h*d_head:(h+1)*d_head]  # COLUMN slice
-                    per_head[h] += float((sl * sl).sum().item())
+                    sl = Gh[:, h*d_head:(h+1)*d_head]
+                    per_head_o[h] = float((sl * sl).sum().item())
                 _ensure_attn(layer_id, "heads", n_heads)
-                attn_energy_per_layer[layer_id]["heads"] += per_head
-                print(f"[DEBUG][GRAD][L{layer_id}] {param} using COL slices: Gh={tuple(Gh.shape)} "
-                      f"expected cols={n_heads*d_head}, rows={Gh.shape[0]}")
+                attn_energy_per_layer[layer_id]["heads"] += per_head_o
+                print(f"[DEBUG][GRAD][L{layer_id}] o COL slices: {tuple(Gh.shape)} -> n_heads={n_heads} d_head={d_head}")
             
 
     # Combine incoming+outgoing for each MLP neuron
@@ -347,49 +380,53 @@ def load_delta_neuron_energy(weight_root: str, step: int) -> Tuple[np.ndarray, n
                 per_neuron = (Dup.pow(2).sum(dim=1) + Ddown.pow(2).sum(dim=0)).cpu().numpy()
                 mlp_neuron_chunks.append(per_neuron)
 
-        # Attention q/k/v/o
+        # Attention q/k/v/o (GQA-aware)
         qk = [k for k in d if k.endswith(".self_attn.q_proj.weight")]
         ok = [k for k in d if k.endswith(".self_attn.o_proj.weight") or k.endswith(".self_attn.out_proj.weight")]
+        kk = [k for k in d if k.endswith(".self_attn.k_proj.weight")]
+        vk = [k for k in d if k.endswith(".self_attn.v_proj.weight")]
         if qk and ok and qk[0] in sd_post and ok[0] in sd_post:
             Wq_pre = sd_pre[qk[0]]; Wq_post = sd_post[qk[0]]
             Wo_pre = sd_pre[ok[0]]; Wo_post = sd_post[ok[0]]
-            if Wq_pre.shape == Wq_post.shape and Wo_pre.shape == Wo_post.shape:
-                n_heads, d_head = _infer_heads_from_Wq(Wq_pre)
-                print(f"[DEBUG][DELTA][L{lid}] "
-                      f"q_pre={tuple(Wq_pre.shape)} q_post={tuple(Wq_post.shape)} "
-                      f"o_pre={tuple(Wo_pre.shape)} o_post={tuple(Wo_post.shape)} "
-                      f"n_heads={n_heads} d_head={d_head}")
-                def head_delta_rows(Wpre, Wpost):
-                    # q/k/v: [out=n_heads*d_head, in=d_model] -> slice ROWS
-                    Wd = (Wpost - Wpre).to(torch.float32)
-                    per = np.zeros(n_heads, dtype=np.float64)
-                    for h in range(n_heads):
-                        sl = Wd[h*d_head:(h+1)*d_head, :]
-                        per[h] += float((sl * sl).sum().item())
-                    return per
+            kv_rows = None
+            if kk and kk[0] in sd_post:
+                kv_rows = int(sd_pre[kk[0]].shape[0])
+            elif vk and vk[0] in sd_post:
+                kv_rows = int(sd_pre[vk[0]].shape[0])
+            n_heads, n_kv, d_head = _infer_gqa_meta(int(Wq_pre.shape[0]), kv_rows)
+            print(f"[DEBUG][DELTA][L{lid}] q={tuple(Wq_pre.shape)} o={tuple(Wo_pre.shape)} n_heads={n_heads} n_kv={n_kv} d_head={d_head}")
 
-                def head_delta_cols(Wpre, Wpost):
-                    # o: [out=d_model, in=n_heads*d_head] -> slice COLUMNS
-                    Wd = (Wpost - Wpre).to(torch.float32)
-                    per = np.zeros(n_heads, dtype=np.float64)
-                    for h in range(n_heads):
-                        sl = Wd[:, h*d_head:(h+1)*d_head]
-                        per[h] += float((sl * sl).sum().item())
-                    return per
+            def head_delta_rows(Wpre, Wpost, expected_heads):
+                Wd = (Wpost - Wpre).to(torch.float32)
+                rows = Wd.shape[0]
+                assert rows == expected_heads * d_head, f"rows {rows} != {expected_heads}*{d_head}"
+                per = np.zeros(expected_heads, dtype=np.float64)
+                for h in range(expected_heads):
+                    sl = Wd[h*d_head:(h+1)*d_head, :]
+                    per[h] = float((sl*sl).sum().item())
+                return per
 
-                per_head = head_delta_rows(Wq_pre, Wq_post)
+            def head_delta_cols(Wpre, Wpost, expected_heads):
+                Wd = (Wpost - Wpre).to(torch.float32)
+                cols = Wd.shape[1]
+                assert cols == expected_heads * d_head, f"cols {cols} != {expected_heads}*{d_head}"
+                per = np.zeros(expected_heads, dtype=np.float64)
+                for h in range(expected_heads):
+                    sl = Wd[:, h*d_head:(h+1)*d_head]
+                    per[h] = float((sl*sl).sum().item())
+                return per
 
-                kk = [k for k in d if k.endswith(".self_attn.k_proj.weight")]
-                vk = [k for k in d if k.endswith(".self_attn.v_proj.weight")]
-                if kk and kk[0] in sd_post:
-                    per_head += head_delta_rows(sd_pre[kk[0]], sd_post[kk[0]])
-                if vk and vk[0] in sd_post:
-                    per_head += head_delta_rows(sd_pre[vk[0]], sd_post[vk[0]])
+            per_head = head_delta_rows(Wq_pre, Wq_post, n_heads)  # Q
+            if kk and kk[0] in sd_post:
+                per_k = head_delta_rows(sd_pre[kk[0]], sd_post[kk[0]], n_kv)
+                per_head += np.repeat(per_k, max(1, n_heads//n_kv))[:n_heads]
+            if vk and vk[0] in sd_post:
+                per_v = head_delta_rows(sd_pre[vk[0]], sd_post[vk[0]], n_kv)
+                per_head += np.repeat(per_v, max(1, n_heads//n_kv))[:n_heads]
+            per_head += head_delta_cols(Wo_pre, Wo_post, n_heads)  # O
 
-                per_head += head_delta_cols(Wo_pre, Wo_post)
-                attn_head_chunks.append(per_head)
-                print(f"[DEBUG][DELTA][L{lid}] per-head ΔW sum={per_head.sum():.3e}  "
-                      f"min={per_head.min():.3e}  max={per_head.max():.3e}")
+            attn_head_chunks.append(per_head)
+            print(f"[DEBUG][DELTA][L{lid}] per-head ΔW sum={per_head.sum():.3e} min={per_head.min():.3e} max={per_head.max():.3e}")
 
     mlp_neuron_delta = np.concatenate(mlp_neuron_chunks, axis=0) if mlp_neuron_chunks else np.array([], dtype=np.float64)
     attn_head_delta  = np.concatenate(attn_head_chunks, axis=0) if attn_head_chunks else np.array([], dtype=np.float64)
