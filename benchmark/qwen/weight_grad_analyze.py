@@ -21,7 +21,7 @@ Saves:
 GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
 WEIGHT_ROOT     = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
 GLOBAL_STEP     = 200        # plots grads @ this step; compares stepXXXXXX_pre vs stepXXXXXX_post
-OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots/mlp"
+OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots/mha"
 
 SAMPLE_FRAC     = 1.0        # <1.0 to uniformly subsample to save RAM (e.g., 0.25)
 TOP_P           = 0.01       # annotate top 1% capture on each curve
@@ -286,7 +286,7 @@ def load_delta_sq_from_pre_post(weight_root: str, step: int, sample_frac: float 
     for name, w_pre in sd_pre.items():
         if not _param_name_passes(name, include_patterns, exclude_patterns, include_bias):
             continue
-        if ".mlp." not in name:
+        if ".mlp." in name:
             continue
         w_post = sd_post.get(name, None)
         if w_post is None:
@@ -318,7 +318,7 @@ def main():
 
     # Gradients
     # g2_all = load_grad_sq_from_index(GRAD_BASE_DIR, GLOBAL_STEP, SAMPLE_FRAC)
-    g2_all = load_grad_sq_from_index_filtered(GRAD_BASE_DIR, GLOBAL_STEP, SAMPLE_FRAC, include_submodules=["mlp"])
+    g2_all = load_grad_sq_from_index_filtered(GRAD_BASE_DIR, GLOBAL_STEP, SAMPLE_FRAC, include_submodules=["self_attn"])
     xg, yg, Ng = _make_curve(g2_all)
     grad_png = os.path.join(OUT_DIR, f"grad_curve_step{GLOBAL_STEP:06d}.png")
     g_cap = _plot_curve(xg, yg, f"Gradients @ step {GLOBAL_STEP}", grad_png, top_p=TOP_P)
