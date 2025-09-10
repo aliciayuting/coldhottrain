@@ -21,7 +21,7 @@ Saves:
 GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
 WEIGHT_ROOT     = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
 GLOBAL_STEP     = 200        # plots grads @ this step; compares stepXXXXXX_pre vs stepXXXXXX_post
-OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots"
+OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/plots/mlp"
 
 SAMPLE_FRAC     = 1.0        # <1.0 to uniformly subsample to save RAM (e.g., 0.25)
 TOP_P           = 0.01       # annotate top 1% capture on each curve
@@ -176,6 +176,48 @@ def load_grad_sq_from_index(grad_base_dir: str, global_step: int, sample_frac: f
 
     return np.concatenate(chunks, axis=0)
 
+# ---- Gradients from index.csv, with submodule filter ----
+
+def load_grad_sq_from_index_filtered(grad_base_dir: str, global_step: int, sample_frac: float = 1.0,
+                                     index_csv: Optional[str] = None,
+                                     include_submodules: Optional[List[str]] = None) -> np.ndarray:
+    """
+    Like load_grad_sq_from_index, but restricts to given submodules present in index.csv
+    (e.g., ["mlp"] or ["self_attn"]). If include_submodules is None, all submodules are included.
+    """
+    if index_csv is None:
+        index_csv = os.path.join(grad_base_dir, "index.csv")
+    if not os.path.isfile(index_csv):
+        raise FileNotFoundError(f"Missing index.csv: {index_csv}")
+
+    df = pd.read_csv(index_csv)
+    required = {"global_step", "file"}
+    if not required.issubset(df.columns):
+        raise ValueError("index.csv must contain columns 'global_step' and 'file'.")
+
+    rows = df[df["global_step"] == global_step]
+    if include_submodules is not None:
+        rows = rows[rows["submodule"].isin(include_submodules)]
+    if rows.empty:
+        raise ValueError(f"No entries for global_step={global_step} with submodules={include_submodules} in {index_csv}")
+
+    file_paths = [os.path.join(grad_base_dir, f) for f in rows["file"].tolist()]
+
+    chunks = []
+    for p in file_paths:
+        if not os.path.isfile(p):
+            warnings.warn(f"[grad] Missing file: {p}")
+            continue
+        t = _load_any_tensor(p)
+        g2 = _tensor_to_sampled_sq_1d(t, sample_frac)
+        chunks.append(g2)
+
+    if not chunks:
+        raise RuntimeError("No gradients loaded (all files missing or empty after filtering).")
+
+    return np.concatenate(chunks, axis=0)
+
+
 # ---- Weights: pre vs post -> delta ----
 
 def _param_name_passes(name: str,
@@ -244,6 +286,8 @@ def load_delta_sq_from_pre_post(weight_root: str, step: int, sample_frac: float 
     for name, w_pre in sd_pre.items():
         if not _param_name_passes(name, include_patterns, exclude_patterns, include_bias):
             continue
+        if ".mlp." not in name:
+            continue
         w_post = sd_post.get(name, None)
         if w_post is None:
             missing += 1
@@ -273,7 +317,8 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
     # Gradients
-    g2_all = load_grad_sq_from_index(GRAD_BASE_DIR, GLOBAL_STEP, SAMPLE_FRAC)
+    # g2_all = load_grad_sq_from_index(GRAD_BASE_DIR, GLOBAL_STEP, SAMPLE_FRAC)
+    g2_all = load_grad_sq_from_index_filtered(GRAD_BASE_DIR, GLOBAL_STEP, SAMPLE_FRAC, include_submodules=["mlp"])
     xg, yg, Ng = _make_curve(g2_all)
     grad_png = os.path.join(OUT_DIR, f"grad_curve_step{GLOBAL_STEP:06d}.png")
     g_cap = _plot_curve(xg, yg, f"Gradients @ step {GLOBAL_STEP}", grad_png, top_p=TOP_P)
