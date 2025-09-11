@@ -56,7 +56,7 @@ tokenized_ds = ds.map(format_example, batched=False)
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
-output_dir = f"/pscratch/sd/l/lsx/yyt_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+output_dir = f"/pscratch/sd/l/lsx/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
 
 weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
@@ -174,6 +174,13 @@ trainer = CustomTrainer(
     data_collator=collator,
     zero_bottom_k_percent=ZERO_BOTTOM_K_PERCENT,
     zero_mode=ZERO_MODE,
+)
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=tokenized_ds["train"],
+    data_collator=collator,
 )
 
 num_gpus = torch.cuda.device_count()
