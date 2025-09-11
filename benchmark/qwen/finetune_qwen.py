@@ -88,10 +88,10 @@ class CustomTrainer(Trainer):
         self.zero_bottom_k_percent = zero_bottom_k_percent
         self.zero_mode = zero_mode
         
-    def training_step(self, model, inputs):
+    def training_step(self, model, inputs, num_items_in_batch):
         """Override training_step to intercept gradients"""
-        loss = super().training_step(model, inputs)
-        
+        loss = super().training_step(model, inputs, num_items_in_batch)
+
         # Intercept gradients after backward pass but before optimizer step
         if self.zero_bottom_k_percent > 0:
             self._zero_bottom_k_gradients()
