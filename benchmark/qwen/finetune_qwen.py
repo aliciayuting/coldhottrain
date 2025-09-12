@@ -6,7 +6,8 @@ from probe import *
 
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
-
+RUN_NAME = "regular"
+SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
@@ -56,7 +57,7 @@ tokenized_ds = ds.map(format_example, batched=False)
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
-output_dir = f"/pscratch/sd/l/lsx/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}"
 
 weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
