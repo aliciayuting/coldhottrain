@@ -200,7 +200,7 @@ dump_cb = PerModuleGradDumper(
     model=model,
     capture_steps=100,
     include_bias=True,
-    also_embeddings=False,  # set True if you also want embeddings/lm_head
+    also_embeddings=True,  # set True if you also want embeddings/lm_head
     weight_out_dir=weight_out_dir,
 )
 trainer.add_callback(dump_cb)
