@@ -183,7 +183,7 @@ def load_grad_channel_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray,
         elif out is None: mlp = inc
         else:            mlp = inc + out
         mlp_all.append(inc)
-        mlp_all.append(out)
+        # mlp_all.append(out)
 
     mlp_channel_grad = np.concatenate(mlp_all, axis=0) if len(mlp_all) else np.array([], dtype=np.float64)
     # write top mlp channels to CSV
@@ -276,7 +276,7 @@ def load_delta_channel_energy(weight_root: str, step: int) -> Tuple[np.ndarray, 
     for lid, d in keys_by_layer.items():
         # MLP up/down
         up_k   = [k for k in d if k.endswith(".mlp.up_proj.weight")]
-        down_k = [k for k in d if k.endswith(".mlp.down_proj.weight")]
+        down_k = [] #[k for k in d if k.endswith(".mlp.down_proj.weight")]
         if up_k and up_k[0] in sd_post and down_k and down_k[0] in sd_post:
             Wup_pre   = sd_pre[up_k[0]];   Wup_post   = sd_post[up_k[0]]
             Wdown_pre = sd_pre[down_k[0]]; Wdown_post = sd_post[down_k[0]]
