@@ -186,6 +186,22 @@ def load_grad_channel_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray,
         mlp_all.append(out)
 
     mlp_channel_grad = np.concatenate(mlp_all, axis=0) if len(mlp_all) else np.array([], dtype=np.float64)
+    # write top mlp channels to CSV
+    top_rows = []
+    if mlp_channel_grad.size:
+        top_idx = np.argsort(mlp_channel_grad)[::-1][:200]
+        for rank, idx in enumerate(top_idx, 1):
+            top_rows.append({
+                "kind": "MLP",
+                "index": int(idx),
+                "value": float(mlp_channel_grad[idx]),
+                "rank": rank
+            })
+    if top_rows:
+        df = pd.DataFrame(top_rows)
+        out_csv = os.path.join(OUT_DIR, f"top200_grad_step{step:06d}.csv")
+        df.to_csv(out_csv, index=False)
+        print(f"[DEBUG] Wrote top-200 grad values to {out_csv}")
     print(f"[DEBUG] grad MLP channels: {sum(m.size for m in mlp_all) if mlp_all else 0} ")
     return mlp_channel_grad, np.array([], dtype=np.float64)  # no attn in this version
 
