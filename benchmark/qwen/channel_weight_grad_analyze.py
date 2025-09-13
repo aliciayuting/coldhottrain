@@ -161,13 +161,13 @@ def load_grad_channel_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray,
 
         if sub == "mlp":
             if param == "up_proj.weight":
-                # per-channel incoming energy = row-wise sum
-                e = (G.to(torch.float32).pow(2).sum(dim=1)).cpu().numpy()  # [d_hidden]
+                # per-channel incoming energy = column-wise sum
+                e = (G.to(torch.float32).pow(2).sum(dim=0)).cpu().numpy()  # [d_hidden]
                 _ensure_mlp(layer_id, "incoming", e.size)
                 mlp_energy_per_layer[layer_id]["incoming"] += e
             elif param == "down_proj.weight":
-                # per-channel outgoing energy = column-wise sum
-                e = (G.to(torch.float32).pow(2).sum(dim=0)).cpu().numpy()  # [d_hidden]
+                # per-channel outgoing energy = row-wise sum
+                e = (G.to(torch.float32).pow(2).sum(dim=1)).cpu().numpy()  # [d_hidden]
                 _ensure_mlp(layer_id, "outgoing", e.size)
                 mlp_energy_per_layer[layer_id]["outgoing"] += e
             # (optionally include gate_proj if you want; by default we focus on up/down as channel definition)
@@ -281,10 +281,10 @@ def load_delta_channel_energy(weight_root: str, step: int) -> Tuple[np.ndarray, 
             Wup_pre   = sd_pre[up_k[0]];   Wup_post   = sd_post[up_k[0]]
             Wdown_pre = sd_pre[down_k[0]]; Wdown_post = sd_post[down_k[0]]
             if Wup_pre.shape == Wup_post.shape and Wdown_pre.shape == Wdown_post.shape:
-                Dup   = (Wup_post - Wup_pre)     # [d_hidden, d_model]  (row = channel incoming)
-                Ddown = (Wdown_post - Wdown_pre) # [d_model, d_hidden]  (col = channel outgoing)
-                per_up_channel = Dup.pow(2).sum(dim=1).cpu().numpy()
-                per_down_channel = Ddown.pow(2).sum(dim=0).cpu().numpy()
+                Dup   = (Wup_post - Wup_pre)     # [d_hidden, d_model]  (column = channel incoming)
+                Ddown = (Wdown_post - Wdown_pre) # [d_model, d_hidden]  (row = channel outgoing)
+                per_up_channel = Dup.pow(2).sum(dim=0).cpu().numpy()
+                per_down_channel = Ddown.pow(2).sum(dim=1).cpu().numpy()
                 mlp_channel_chunks.append(per_up_channel)
                 mlp_channel_chunks.append(per_down_channel)
                 print("per_up_channel dim", per_up_channel.shape, "per_down_channel dim", per_down_channel.shape)
