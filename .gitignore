@@ -37,3 +37,9 @@ build-*
 *.arrow
 *inat/*
 *google-landmark/*
+
+
+**/pycache
+
+
+analyze
