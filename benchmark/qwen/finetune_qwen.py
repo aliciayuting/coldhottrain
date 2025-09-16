@@ -117,7 +117,8 @@ class CustomTrainer(Trainer):
         # Only start zeroing after we have selected a fixed mask post N epochs
         if cur_epoch >= self.freeze_after_epochs:
             if not self._fixed_masks_ready:
-                #make sure we are not in the middle of a gradient accumulation step
+                #make sure we are not in the middle of a gradient accumulation step. 
+                #model_wrapped is the DDP-wrapped model. base model does not have this attr
                 if getattr(self.model_wrapped, "require_backward_grad_sync", True):
                     # Compute fixed masks using the CURRENT gradients once
                     if dist.is_available() and dist.is_initialized():
@@ -330,12 +331,12 @@ trainer = CustomTrainer(
     freeze_after_epochs=FREEZE_AFTER_EPOCHS,
 )
 
-# trainer = Trainer(
-#     model=model,
-#     args=args,
-#     train_dataset=tokenized_ds["train"],
-#     data_collator=collator,
-# )
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=tokenized_ds["train"],
+    data_collator=collator,
+)
 
 num_gpus = torch.cuda.device_count()
 num_samples = len(tokenized_ds["train"])
