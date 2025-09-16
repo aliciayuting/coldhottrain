@@ -2,6 +2,7 @@ from transformers import TrainerCallback, PreTrainedModel
 import torch.distributed as dist
 import torch
 import hashlib
+import os
 
 def _is_main():
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
@@ -14,12 +15,16 @@ class SkipGradientCallback(TrainerCallback):
                  epoch_compute_masks=2,
                  zero_bottom_k_percent=0.1,
                  zero_mode="neurons",
+                 freeze_params=False,
+                 output_dir="",
                  ):
             self.model = model
             self.epoch_start_track = epoch_start_track
             self.epoch_compute_masks = epoch_compute_masks
             self.zero_bottom_k_percent = zero_bottom_k_percent
             self.zero_mode = zero_mode
+            self.output_dir = output_dir
+
             self._has_computed_masks = False
 
             self.is_tracking_grads = False
@@ -37,6 +42,14 @@ class SkipGradientCallback(TrainerCallback):
             print(f"Computing skip-gradient masks at epoch {self.epoch_compute_masks}...")
         if self.zero_mode == "neurons":
             self.neuron_masks = self._build_neuron_masks_from_scores()
+            # save masks to output_dir
+            if self.output_dir and _is_main():
+                os.makedirs(self.output_dir, exist_ok=True)
+                cpu_masks = {k: v.detach().to("cpu", dtype=torch.bool) for k, v in self.neuron_masks.items()}
+                out_path = os.path.join(self.output_dir, "neuron_masks.pt")
+                torch.save(cpu_masks, out_path)
+                print(f"[skipgradient] saved neuron masks to {out_path}")
+            
         else:
             raise ValueError(f"Invalid zero_mode: {self.zero_mode}")
         
