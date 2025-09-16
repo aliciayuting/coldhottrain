@@ -107,7 +107,7 @@ class CustomTrainer(Trainer):
         """Override training_step to intercept gradients"""
         loss = super().training_step(model, inputs, num_items_in_batch)
         #print(f"sync var: {self.model.require_backward_grad_sync}")
-        print(f"sync var 2: {self.model_wrapped.require_backward_grad_sync}")
+        #print(f"sync var 2: {self.model_wrapped.require_backward_grad_sync}")
         if self.zero_bottom_k_percent <= 0:
             return loss
 
@@ -118,7 +118,7 @@ class CustomTrainer(Trainer):
         if cur_epoch >= self.freeze_after_epochs:
             if not self._fixed_masks_ready:
                 #make sure we are not in the middle of a gradient accumulation step
-                if getattr(self.model, "require_backward_grad_sync", True):
+                if getattr(self.model_wrapped, "require_backward_grad_sync", True):
                     # Compute fixed masks using the CURRENT gradients once
                     if dist.is_available() and dist.is_initialized():
                         for name, p in self.model.named_parameters():
