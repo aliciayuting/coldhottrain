@@ -229,7 +229,10 @@ class CustomTrainer(Trainer):
             return {}
 
         # Bottom-K indices across all rows of all relevant params
-        bottom_idx = torch.topk(all_scores, k, largest=False).indices
+
+        order = torch.argsort(all_scores, stable=True)
+        bottom_idx = order[:k]
+        #bottom_idx = torch.topk(all_scores, k, largest=False).indices
 
         # Build boolean row masks per param
         masks = {}
