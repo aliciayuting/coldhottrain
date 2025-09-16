@@ -18,10 +18,10 @@ No edits to training/callback code required.
 # ========================
 # Config (edit these)
 # ========================
-GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
-WEIGHT_ROOT     = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/weight_dump"
+GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-run1-neurons-20250916-051336/grad_dump"
+WEIGHT_ROOT     = "/pscratch/sd/l/lsx/jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-run1-neurons-20250916-051336/weight_dump"
 GLOBAL_STEP     = 200
-OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/test_plots_channel"
+OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/j_test_plots_channel"
 # OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/exact_channel"
 
 
@@ -202,6 +202,24 @@ def load_grad_channel_energy(grad_base_dir: str, step: int) -> Tuple[np.ndarray,
         out_csv = os.path.join(OUT_DIR, f"top200_grad_step{step:06d}.csv")
         df.to_csv(out_csv, index=False)
         print(f"[DEBUG] Wrote top-200 grad values to {out_csv}")
+    
+    bottom_rows = []
+    n_bottom = max(1, int(0.1 * mlp_channel_grad.size))  # at least 1 element
+
+    if mlp_channel_grad.size:
+        bottom_idx = np.argsort(mlp_channel_grad)[:n_bottom]
+        for rank, idx in enumerate(bottom_idx, 1):
+            bottom_rows.append({
+                "kind": "MLP",
+                "index": int(idx),
+                "value": float(mlp_channel_grad[idx]),
+                "rank": rank
+            })
+    if bottom_rows:
+        df = pd.DataFrame(bottom_rows)
+        out_csv = os.path.join(OUT_DIR, f"bottom10p_grad_step{step:06d}.csv")
+        df.to_csv(out_csv, index=False)
+        print(f"[DEBUG] Wrote bottom-200 grad values to {out_csv}")
     print(f"[DEBUG] grad MLP channels: {sum(m.size for m in mlp_all) if mlp_all else 0} ")
     return mlp_channel_grad, np.array([], dtype=np.float64)  # no attn in this version
 
@@ -286,7 +304,7 @@ def load_delta_channel_energy(weight_root: str, step: int) -> Tuple[np.ndarray, 
                 per_up_channel = Dup.pow(2).sum(dim=0).cpu().numpy()
                 per_down_channel = Ddown.pow(2).sum(dim=1).cpu().numpy()
                 mlp_channel_chunks.append(per_up_channel)
-                mlp_channel_chunks.append(per_down_channel)
+                # mlp_channel_chunks.append(per_down_channel)
                 print("per_up_channel dim", per_up_channel.shape, "per_down_channel dim", per_down_channel.shape)
 
     mlp_channel_delta = np.concatenate(mlp_channel_chunks, axis=0) if mlp_channel_chunks else np.array([], dtype=np.float64)
