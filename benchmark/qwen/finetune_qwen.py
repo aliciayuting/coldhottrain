@@ -6,8 +6,12 @@ from probe import *
 
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
-RUN_NAME = "regular"
+RUN_NAME = "neurons"
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
+ZERO_BOTTOM_K_PERCENT = 0.1   # Zero bottom 10% of gradients
+ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
+FREEZE_AFTER_EPOCHS = 1       # Choose bottom-k once after this many epochs
+
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
@@ -66,7 +70,7 @@ args = TrainingArguments(
     per_device_train_batch_size=16,
     gradient_accumulation_steps=2,
     # gradient_accumulation_steps=1,
-    num_train_epochs=40,
+    num_train_epochs=30,
     learning_rate=2e-5,
     # fp16=True,
     bf16=True,
@@ -81,92 +85,162 @@ args = TrainingArguments(
 
 
 class CustomTrainer(Trainer):
-    def __init__(self, zero_bottom_k_percent=0.1, zero_mode="weights", **kwargs):
+    def __init__(self, zero_bottom_k_percent=0.1, zero_mode="weights", freeze_after_epochs=3, **kwargs):
         """
         zero_bottom_k_percent: float, percentage of bottom gradients to zero (0.1 = 10%)
         zero_mode: str, either "weights" (individual weights) or "neurons" (full neurons)
+        freeze_after_epochs: int, epoch count after which bottom-k is selected once
+        and then fixed for the remainder of training.
         """
         super().__init__(**kwargs)
-        self.zero_bottom_k_percent = zero_bottom_k_percent
-        self.zero_mode = zero_mode
-        
+        self.zero_bottom_k_percent = float(zero_bottom_k_percent)
+        self.zero_mode = str(zero_mode)
+        self.freeze_after_epochs = int(freeze_after_epochs)
+
+        # Fixed masks computed once after freeze_after_epochs
+        self._fixed_weight_masks = None   # dict[name -> bool Tensor same shape as param]
+        self._fixed_neuron_masks = None   # dict[name -> bool Tensor of shape [out_features]]
+        self._fixed_masks_ready = False
+
     def training_step(self, model, inputs, num_items_in_batch):
         """Override training_step to intercept gradients"""
         loss = super().training_step(model, inputs, num_items_in_batch)
 
-        # Intercept gradients after backward pass but before optimizer step
-        if self.zero_bottom_k_percent > 0:
-            self._zero_bottom_k_gradients()
-            
+        if self.zero_bottom_k_percent <= 0:
+            return loss
+
+        # Determine epoch progress as float; None early in training
+        cur_epoch = float(self.state.epoch) if self.state.epoch is not None else 0.0
+
+        # Only start zeroing after we have selected a fixed mask post N epochs
+        if cur_epoch >= self.freeze_after_epochs:
+            if not self._fixed_masks_ready:
+                # Compute fixed masks using the CURRENT gradients once
+                self._compute_fixed_masks_from_current_grads()
+                self._fixed_masks_ready = True
+                # Fall-through to also apply them on this same step
+            self._apply_fixed_masks()
+
+        # Before freeze_after_epochs, we do not zero gradients (no dynamic selection)
         return loss
-    
-    def _zero_bottom_k_gradients(self):
-        """Zero out bottom K% of gradients by magnitude"""
+
+    def _compute_fixed_masks_from_current_grads(self):
+        """Compute and cache fixed masks from gradients of the current step."""
         if self.zero_mode == "weights":
-            self._zero_bottom_k_weights()
+            self._fixed_weight_masks = self._build_weight_masks_from_grads()
+            total_elems = sum(m.numel() for m in self._fixed_weight_masks.values()) if self._fixed_weight_masks else 0
+            zeroed = sum(int(m.sum().item()) for m in self._fixed_weight_masks.values()) if self._fixed_weight_masks else 0
+            print(f"[CustomTrainer] Computed fixed weight masks: zeroing {zeroed}/{total_elems} elements (~{(zeroed/max(1,total_elems))*100:.2f}%).")
         elif self.zero_mode == "neurons":
-            self._zero_bottom_k_neurons()
-    
-    def _zero_bottom_k_weights(self):
-        """Zero individual weights with bottom K% gradient magnitudes"""
-        # Collect all gradient magnitudes
-        all_grad_mags = []
-        
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                grad_mag = param.grad.abs().flatten()
-                all_grad_mags.append(grad_mag)
-        
-        if not all_grad_mags:
-            return
-            
-        # Concatenate all gradients and find bottom K% threshold
-        all_grads = torch.cat(all_grad_mags)
-        k = int(len(all_grads) * self.zero_bottom_k_percent)
-        if k == 0:
-            return
-            
-        # Use topk with largest=False to get bottom K values
-        threshold = torch.topk(all_grads, k, largest=False).values[-1]
-        
-        # Zero gradients below or equal to threshold
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                mask = param.grad.abs() <= threshold
-                param.grad[mask] = 0.0
-    
-    def _zero_bottom_k_neurons(self):
-        """Zero full neurons with bottom K% L2 norm squared gradient magnitudes"""
-        neuron_scores = []
-        neuron_info = []
-        
-        for name, param in self.model.named_parameters():
-            if param.grad is not None and len(param.grad.shape) >= 2:
-                # For weight matrices, treat each output neuron (first dimension)
-                for neuron_idx in range(param.grad.shape[0]):
-                    neuron_grad = param.grad[neuron_idx]
-                    l2_norm_squared = (neuron_grad ** 2).sum().item()
-                    neuron_scores.append(l2_norm_squared)
-                    neuron_info.append((name, param, neuron_idx))
-        
-        if not neuron_scores:
-            return
-            
-        # Find bottom K% neurons by average gradient magnitude
-        k = int(len(neuron_scores) * self.zero_bottom_k_percent)
-        if k == 0:
-            return
-            
-        bottom_k_indices = torch.topk(torch.tensor(neuron_scores), k, largest=False).indices
-        
-        # Zero gradients for bottom K% neurons
-        for idx in bottom_k_indices:
-            name, param, neuron_idx = neuron_info[idx]
-            param.grad[neuron_idx] = 0.0
+            self._fixed_neuron_masks = self._build_neuron_masks_from_grads()
+            total_rows = sum(m.numel() for m in self._fixed_neuron_masks.values()) if self._fixed_neuron_masks else 0
+            zeroed = sum(int(m.sum().item()) for m in self._fixed_neuron_masks.values()) if self._fixed_neuron_masks else 0
+            print(f"[CustomTrainer] Computed fixed neuron masks: zeroing {zeroed}/{total_rows} rows (~{(zeroed/max(1,total_rows))*100:.2f}%).")
+        else:
+            raise ValueError(f"Unknown zero_mode: {self.zero_mode}")
+
+    #Q: do we want to mask out bias grads too?
+    @torch.no_grad()
+    def _apply_fixed_masks(self):
+        """Apply previously computed fixed masks to current gradients."""
+        if self.zero_mode == "weights":
+            if not self._fixed_weight_masks:
+                return
+            for name, p in self.model.named_parameters():
+                if p.grad is None:
+                    continue
+                mask = self._fixed_weight_masks.get(name)
+                if mask is not None:
+                    p.grad[mask] = 0.0
+        elif self.zero_mode == "neurons":
+            if not self._fixed_neuron_masks:
+                return
+            for name, p in self.model.named_parameters():
+                if p.grad is None or p.grad.ndim < 2:
+                    continue
+                row_mask = self._fixed_neuron_masks.get(name)
+                if row_mask is not None:
+                    # Zero out entire rows where row_mask is True
+                    p.grad[row_mask] = 0.0
+        else:
+            raise ValueError(f"Unknown zero_mode: {self.zero_mode}")
+
+    @torch.no_grad()
+    def _build_weight_masks_from_grads(self):
+        """Build boolean masks per parameter for bottom-K% gradient magnitudes."""
+        # Collect all gradient magnitudes flattened
+        mags = []
+        per_param_shapes = {}
+        for name, p in self.model.named_parameters():
+            if p.grad is None:
+                continue
+            g = p.grad.detach().abs()
+            mags.append(g.flatten())
+            per_param_shapes[name] = g.shape
+        if not mags:
+            return {}
+        all_mags = torch.cat(mags)
+        k = int(all_mags.numel() * self.zero_bottom_k_percent)
+        if k <= 0:
+            return {}
+        # Threshold for bottom-K values
+        thresh = torch.topk(all_mags, k, largest=False).values[-1]
+
+        # Build mask per param (True where we want to zero)
+        masks = {}
+        for name, p in self.model.named_parameters():
+            if p.grad is None:
+                continue
+            mask = (p.grad.abs() <= thresh)
+            # Ensure mask is same dtype/device as grad (bool on same device)
+            masks[name] = mask.to(dtype=torch.bool, device=p.grad.device)
+        return masks
+
+    @torch.no_grad()
+    def _build_neuron_masks_from_grads(self):
+        """Build boolean row masks per parameter for bottom-K% neuron gradient L2 norms."""
+        # Compute per-row L2 norms over all 2D+ params
+        scores = []
+        param_refs = []  # (name, rows)
+        for name, p in self.model.named_parameters():
+            if p.grad is None or p.grad.ndim < 2:
+                continue
+            if p.grad.ndim > 2:
+                print(f"[CustomTrainer] param {name} has ndim={p.grad.ndim}")
+            g = p.grad.detach()
+            rows = g.shape[0]
+            flat = g.view(rows, -1)
+            l2 = (flat.pow(2).sum(dim=1)).float()  # [rows]
+            scores.append(l2)
+            param_refs.append((name, rows))
+
+        if not scores:
+            return {}
+
+        all_scores = torch.cat(scores)
+        total_rows = all_scores.numel()
+        k = int(total_rows * self.zero_bottom_k_percent)
+        if k <= 0:
+            return {}
+
+        # Bottom-K indices across all rows of all relevant params
+        bottom_idx = torch.topk(all_scores, k, largest=False).indices
+
+        # Build boolean row masks per param
+        masks = {}
+        # Map global index back to (param, local_row)
+        offset = 0
+        for (name, rows), l2 in zip(param_refs, scores):
+            #find out which rows of this param are in bottom k
+            this_slice = bottom_idx[(bottom_idx >= offset) & (bottom_idx < offset + rows)] - offset
+            if this_slice.numel() > 0:
+                row_mask = torch.zeros(rows, dtype=torch.bool, device=l2.device)
+                row_mask[this_slice] = True
+                masks[name] = row_mask
+            offset += rows
+        return masks
 
 # Configuration - adjust these values
-ZERO_BOTTOM_K_PERCENT = 0.1  # Zero bottom 10% of gradients
-ZERO_MODE = "weights"        # Options: "weights" or "neurons"
 
 # Trainer
 trainer = CustomTrainer(
@@ -176,14 +250,15 @@ trainer = CustomTrainer(
     data_collator=collator,
     zero_bottom_k_percent=ZERO_BOTTOM_K_PERCENT,
     zero_mode=ZERO_MODE,
+    freeze_after_epochs=FREEZE_AFTER_EPOCHS,
 )
 
-trainer = Trainer(
-    model=model,
-    args=args,
-    train_dataset=tokenized_ds["train"],
-    data_collator=collator,
-)
+# trainer = Trainer(
+#     model=model,
+#     args=args,
+#     train_dataset=tokenized_ds["train"],
+#     data_collator=collator,
+# )
 
 num_gpus = torch.cuda.device_count()
 num_samples = len(tokenized_ds["train"])
