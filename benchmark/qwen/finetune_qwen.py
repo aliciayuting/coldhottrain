@@ -106,7 +106,7 @@ class CustomTrainer(Trainer):
     def training_step(self, model, inputs, num_items_in_batch):
         """Override training_step to intercept gradients"""
         loss = super().training_step(model, inputs, num_items_in_batch)
-        print(f"sync var: {self.model.require_backward_grad_sync}")
+        #print(f"sync var: {self.model.require_backward_grad_sync}")
         print(f"sync var 2: {self.model_wrapped.require_backward_grad_sync}")
         if self.zero_bottom_k_percent <= 0:
             return loss
