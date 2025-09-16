@@ -281,7 +281,7 @@ class CustomTrainer(Trainer):
             h.update(str(tuple(shape)).encode("utf-8"))
             h.update(mask_cpu.numpy().tobytes())
             # take first 8 bytes as unsigned 64-bit int
-            h64 = int.from_bytes(h.digest()[:8], byteorder="big", signed=False)
+            h64 = int.from_bytes(h.digest()[:8], byteorder="big", signed=True)
             checks.append(h64)
 
         local_vec = torch.tensor(checks, dtype=torch.int64, device="cuda" if torch.cuda.is_available() else "cpu")
