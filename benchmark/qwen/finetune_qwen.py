@@ -119,7 +119,8 @@ class CustomTrainer(Trainer):
                 #make sure we are not in the middle of a gradient accumulation step
                 if getattr(self.model, "require_backward_grad_sync", True):
                     # Compute fixed masks using the CURRENT gradients once
-                    self._compute_fixed_masks_from_current_grads()
+                    if self.zero_mode == "weights":
+                        self._compute_fixed_masks_from_current_grads()
                     if self.zero_mode == "neurons":
                         self._ddp_assert_neuron_masks_identical()
                     self._fixed_masks_ready = True
