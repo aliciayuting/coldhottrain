@@ -334,12 +334,12 @@ trainer = CustomTrainer(
     freeze_after_epochs=FREEZE_AFTER_EPOCHS,
 )
 
-trainer = Trainer(
-    model=model,
-    args=args,
-    train_dataset=tokenized_ds["train"],
-    data_collator=collator,
-)
+# trainer = Trainer(
+#     model=model,
+#     args=args,
+#     train_dataset=tokenized_ds["train"],
+#     data_collator=collator,
+# )
 
 num_gpus = torch.cuda.device_count()
 num_samples = len(tokenized_ds["train"])
