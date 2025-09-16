@@ -116,7 +116,6 @@ class CustomTrainer(Trainer):
 
         # Determine epoch progress as float; None early in training
         cur_epoch = float(self.state.epoch) if self.state.epoch is not None else 0.0
-
         # Only start zeroing after we have selected a fixed mask post N epochs
         if cur_epoch >= self.freeze_after_epochs:
             if not self._fixed_masks_ready:
@@ -124,11 +123,11 @@ class CustomTrainer(Trainer):
                 #model_wrapped is the DDP-wrapped model. base model does not have this attr
                 if getattr(self.model_wrapped, "require_backward_grad_sync", True):
                     # Compute fixed masks using the CURRENT gradients once
-                    if dist.is_available() and dist.is_initialized():
-                        for name, p in self.model.named_parameters():
-                            if p.grad is not None:
-                                # Force synchronization even for ignored params
-                                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+                    # if dist.is_available() and dist.is_initialized():
+                    #     for name, p in self.model.named_parameters():
+                    #         if p.grad is not None:
+                    #             # Force synchronization even for ignored params
+                    #             dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
                     self._compute_fixed_masks_from_current_grads()
                     if self.zero_mode == "neurons":
                         self._ddp_assert_neuron_masks_identical()
