@@ -106,7 +106,7 @@ class CustomTrainer(Trainer):
     def training_step(self, model, inputs, num_items_in_batch):
         """Override training_step to intercept gradients"""
         loss = super().training_step(model, inputs, num_items_in_batch)
-
+        print(f"sync var: {self.model.require_backward_grad_sync}")
         if self.zero_bottom_k_percent <= 0:
             return loss
 
@@ -119,8 +119,12 @@ class CustomTrainer(Trainer):
                 #make sure we are not in the middle of a gradient accumulation step
                 if getattr(self.model, "require_backward_grad_sync", True):
                     # Compute fixed masks using the CURRENT gradients once
-                    if self.zero_mode == "weights":
-                        self._compute_fixed_masks_from_current_grads()
+                    if dist.is_available() and dist.is_initialized():
+                        for name, p in self.model.named_parameters():
+                            if p.grad is not None:
+                                # Force synchronization even for ignored params
+                                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+                    self._compute_fixed_masks_from_current_grads()
                     if self.zero_mode == "neurons":
                         self._ddp_assert_neuron_masks_identical()
                     self._fixed_masks_ready = True
