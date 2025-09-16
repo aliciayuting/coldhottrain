@@ -4,10 +4,13 @@ import torch
 from gradient_callback import *
 from probe import *
 import hashlib
+import time
+import torch.distributed as dist
 
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
 RUN_NAME = "neurons"
+_RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 ZERO_BOTTOM_K_PERCENT = 0.1   # Zero bottom 10% of gradients
 ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
@@ -62,7 +65,7 @@ tokenized_ds = ds.map(format_example, batched=False)
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
-output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}"
+output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
 
 weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
