@@ -128,25 +128,25 @@ class SkipGradientCallback(TrainerCallback):
         if _is_main():
             print(f"[skipgradient][on_train_batch_end] global_step={state.global_step}")
     def on_pre_optimizer_step(self, args, state, control, **kwargs):
-        if _is_main():
-            print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step}")
+        #if _is_main():
+            #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step}")
 
         if self.is_tracking_grads and not self._has_computed_masks:
             self._collect_neuron_grad_norms()
         elif self._has_computed_masks:
-            print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step} applying fixed masks")
+            #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step} applying fixed masks")
             self._apply_fixed_masks()
 
 
-    def on_step_end(self, args, state, control, **kwargs):
-        # Fires after optimizer step; here global_step has just incremented
-        if _is_main():
-            print(f"[skipgradient][on_step_end] global_step={state.global_step}")
+    # def on_step_end(self, args, state, control, **kwargs):
+    #     # Fires after optimizer step; here global_step has just incremented
+    #     if _is_main():
+    #         print(f"[skipgradient][on_step_end] global_step={state.global_step}")
             
-    def on_substep_end(self, args, state, control, **kwargs):
-        # Fires after optimizer step; here global_step has just incremented
-        if _is_main():
-            print(f"[skipgradient][on_substep_end] global_step={state.global_step}")
+    # def on_substep_end(self, args, state, control, **kwargs):
+    #     # Fires after optimizer step; here global_step has just incremented
+    #     if _is_main():
+    #         print(f"[skipgradient][on_substep_end] global_step={state.global_step}")
 
 
     @torch.no_grad()
