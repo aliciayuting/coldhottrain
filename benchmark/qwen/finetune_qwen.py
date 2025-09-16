@@ -3,6 +3,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments,
 import torch
 from gradient_callback import *
 from probe import *
+import hashlib
 
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
@@ -83,7 +84,7 @@ args = TrainingArguments(
 )
 
 
-
+#Q: would it be more efficient to calc the gradient mask on rank 0 and broadcast it to all ranks?
 class CustomTrainer(Trainer):
     def __init__(self, zero_bottom_k_percent=0.1, zero_mode="weights", freeze_after_epochs=3, **kwargs):
         """
@@ -115,9 +116,13 @@ class CustomTrainer(Trainer):
         # Only start zeroing after we have selected a fixed mask post N epochs
         if cur_epoch >= self.freeze_after_epochs:
             if not self._fixed_masks_ready:
-                # Compute fixed masks using the CURRENT gradients once
-                self._compute_fixed_masks_from_current_grads()
-                self._fixed_masks_ready = True
+                #make sure we are not in the middle of a gradient accumulation step
+                if getattr(self.model, "require_backward_grad_sync", True):
+                    # Compute fixed masks using the CURRENT gradients once
+                    self._compute_fixed_masks_from_current_grads()
+                    if self.zero_mode == "neurons":
+                        self._ddp_assert_neuron_masks_identical()
+                    self._fixed_masks_ready = True
                 # Fall-through to also apply them on this same step
             self._apply_fixed_masks()
 
@@ -239,6 +244,69 @@ class CustomTrainer(Trainer):
                 masks[name] = row_mask
             offset += rows
         return masks
+    @torch.no_grad()
+    def _ddp_assert_neuron_masks_identical(self):
+        """Check that self._fixed_neuron_masks are identical across ranks.
+        Call only on a synchronized step (require_backward_grad_sync == True)."""
+        if not (dist.is_available() and dist.is_initialized()):
+            return  # single GPU or non-DDP
+
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        # Canonical param list: all 2D+ params in named order
+        names = []
+        shapes = []
+        for name, p in self.model.named_parameters():
+            if p.ndim >= 2:
+                names.append(name)
+                shapes.append(p.shape)
+
+        # Build a vector of int64 checksums, one per param in 'names'
+        checks = []
+        for (name, shape) in zip(names, shapes):
+            rows = shape[0]
+            mask = self._fixed_neuron_masks.get(name, None)
+            if mask is None:
+                # Treat as all-zeros (no rows selected)
+                mask_cpu = torch.zeros(rows, dtype=torch.bool).cpu()
+            else:
+                # Ensure correct length and on CPU
+                assert mask.ndim == 1 and mask.numel() == rows, f"Row mask shape mismatch for {name}"
+                mask_cpu = mask.detach().to("cpu", dtype=torch.bool)
+
+            # Hash the raw bytes for exact equality (name+shape+mask contents)
+            h = hashlib.sha256()
+            h.update(name.encode("utf-8"))
+            h.update(str(tuple(shape)).encode("utf-8"))
+            h.update(mask_cpu.numpy().tobytes())
+            # take first 8 bytes as unsigned 64-bit int
+            h64 = int.from_bytes(h.digest()[:8], byteorder="big", signed=False)
+            checks.append(h64)
+
+        local_vec = torch.tensor(checks, dtype=torch.int64, device="cuda" if torch.cuda.is_available() else "cpu")
+
+        # Broadcast rank-0's vector as the reference
+        ref_vec = local_vec.clone()
+        dist.broadcast(ref_vec, src=0)
+
+        # Compare to reference and report any mismatches
+        mism = (local_vec != ref_vec)
+        num_mism = int(mism.sum().item())
+
+        # Aggregate across all ranks to see if any mismatches anywhere
+        total_mism = torch.tensor([num_mism], dtype=torch.int32, device=local_vec.device)
+        dist.all_reduce(total_mism, op=dist.ReduceOp.SUM)
+
+        if total_mism.item() != 0:
+            # Print which params differ on this rank (keep it concise)
+            bad_idxs = mism.nonzero(as_tuple=False).flatten().tolist()
+            bad_names = [names[i] for i in bad_idxs[:10]]  # truncate to first 10 for readability
+            print(f"[MaskCheck][rank {rank}] {num_mism} param masks differ from rank 0. e.g., {bad_names}")
+            # Optional: hard assert to fail fast
+            # raise RuntimeError(f"DDP mask mismatch on rank {rank}")
+        elif rank == 0:
+            print("[MaskCheck] All ranks have identical neuron masks ✔")
 
 # Configuration - adjust these values
 
