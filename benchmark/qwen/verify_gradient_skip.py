@@ -42,16 +42,19 @@ print(f"average masked: {total_masked / total_elements}")
 
 
 #load model from checkpoint
-compare_1 = EPOCH_LENGTH*0
-compare_2 = EPOCH_LENGTH*1
+#compare_1 = EPOCH_LENGTH*0
+compare_1 = "Qwen/Qwen2.5-0.5B"
+#compare_1 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*0}")
+compare_2 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*1}")
+
 model1 = AutoModelForCausalLM.from_pretrained(
-    os.path.join(checkpoint_dir, f"checkpoint-{compare_1}"),
+    compare_1,
     torch_dtype=torch.bfloat16,
     device_map="cpu",
 )
 
 model2 = AutoModelForCausalLM.from_pretrained(
-    os.path.join(checkpoint_dir, f"checkpoint-{compare_2}"),
+    compare_2,
     torch_dtype=torch.bfloat16,
     device_map="cpu",
 )
