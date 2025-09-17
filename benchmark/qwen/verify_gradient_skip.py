@@ -11,3 +11,8 @@ print(f"Loading masks from {masks_path}")
 masks = torch.load(masks_path)
 print(f"Loaded masks keys: {masks.keys()}")
 
+torch.set_printoptions(profile="full")
+
+example = masks['model.layers.11.mlp.up_proj.weight']
+print(f"Example mask: {example}")
+print(f"Example mask shape: {example.shape}")
