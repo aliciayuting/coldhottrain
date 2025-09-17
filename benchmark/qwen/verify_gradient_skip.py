@@ -37,15 +37,17 @@ for k,example in masks.items():
     total_masked += sum(example)
     total_elements += example.numel()
 
+print("total masked:", total_masked)
+print("total elements:", total_elements)
 print(f"average masked: {total_masked / total_elements}")
 
 
 
 #load model from checkpoint
 #compare_1 = EPOCH_LENGTH*0
-compare_1 = "Qwen/Qwen2.5-0.5B"
-#compare_1 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*0}")
-compare_2 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*1}")
+#compare_1 = "Qwen/Qwen2.5-0.5B"
+compare_1 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*1}")
+compare_2 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*2}")
 
 model1 = AutoModelForCausalLM.from_pretrained(
     compare_1,
