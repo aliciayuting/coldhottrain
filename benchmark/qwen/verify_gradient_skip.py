@@ -1,6 +1,6 @@
 import os
 import torch
-
+from transformers import AutoModelForCausalLM
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 main_dir = os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-50p-1e-20250916-162317")
 checkpoint_dir = os.path.join(main_dir, "ckpt")
@@ -12,6 +12,15 @@ masks = torch.load(masks_path)
 print(f"Loaded masks keys: {masks.keys()}")
 
 torch.set_printoptions(profile="full")
+
+# Print Qwen/Qwen2.5-0.5B model layer names (derived from mask keys for speed)
+MODEL = "Qwen/Qwen2.5-0.5B"
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL,
+    torch_dtype=torch.bfloat16,
+    device_map="cpu",
+)
+print(model.named_parameters())
 
 #example = masks['model.layers.11.mlp.up_proj.weight']
 #print(f"Example mask: {example}")
