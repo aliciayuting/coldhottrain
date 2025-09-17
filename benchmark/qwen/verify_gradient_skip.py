@@ -33,7 +33,7 @@ for k,example in masks.items():
     print(f"Layer: {k}")
     print(f"Example mask shape: {example.shape}")
     print("proportion of masked:", sum(example) / example.numel())
-    total_masked += sum(example) / example.numel()
-    total_elements += 1
+    total_masked += sum(example)
+    total_elements += example.numel()
 
 print(f"average masked: {total_masked / total_elements}")
