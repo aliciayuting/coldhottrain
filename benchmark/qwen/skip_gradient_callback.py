@@ -141,6 +141,12 @@ class SkipGradientCallback(TrainerCallback):
         if _is_main():
             print(f"[skipgradient][on_train_batch_end] global_step={state.global_step}")
     def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        optimizer = kwargs.get("optimizer", None)
+        if optimizer is None:
+            print("no optimizer :(")
+
+        if(optimizer):
+            print(optimizer)
         #if _is_main():
             #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step}")
 
@@ -149,6 +155,7 @@ class SkipGradientCallback(TrainerCallback):
         elif self._has_computed_masks:
             #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step} applying fixed masks")
             self._apply_fixed_masks()
+
 
 
     # def on_step_end(self, args, state, control, **kwargs):
