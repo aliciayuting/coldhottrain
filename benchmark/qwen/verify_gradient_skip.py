@@ -75,4 +75,7 @@ for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.na
         continue
     for row in range(len(param1)):
         if masks[name1][row]==True and not torch.equal(param1[row], param2[row]):
-            print(f"Layer {name1} has differing weights at row {row}")
+            # go through each element in the row and print the differing elements
+            for col in range(len(param1[row])):
+                if param1[row][col] != param2[row][col]:
+                    print(f"Layer {name1} has differing weights at row {row}, col {col}: {param1[row][col]} != {param2[row][col]}")
