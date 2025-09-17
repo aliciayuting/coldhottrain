@@ -13,7 +13,9 @@ print(f"Loaded masks keys: {masks.keys()}")
 
 torch.set_printoptions(profile="full")
 
-example = masks['model.layers.11.mlp.up_proj.weight']
-print(f"Example mask: {example}")
-print(f"Example mask shape: {example.shape}")
-print("proportion of masked:", sum(example) / example.numel())
+#example = masks['model.layers.11.mlp.up_proj.weight']
+#print(f"Example mask: {example}")
+for k,example in masks.items(): 
+    print(f"Layer: {k}")
+    print(f"Example mask shape: {example.shape}")
+    print("proportion of masked:", sum(example) / example.numel())
