@@ -14,20 +14,26 @@ print(f"Loaded masks keys: {masks.keys()}")
 torch.set_printoptions(profile="full")
 
 # Print Qwen/Qwen2.5-0.5B model layer names (derived from mask keys for speed)
-MODEL = "Qwen/Qwen2.5-0.5B"
-tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL,
-    torch_dtype=torch.bfloat16,
-    device_map="cpu",
-)
+# MODEL = "Qwen/Qwen2.5-0.5B"
+# tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
+# model = AutoModelForCausalLM.from_pretrained(
+#     MODEL,
+#     torch_dtype=torch.bfloat16,
+#     device_map="cpu",
+# )
 
-for param in model.named_parameters():
-    print(param[0])
+# for param in model.named_parameters():
+#     print(param[0])
 
 #example = masks['model.layers.11.mlp.up_proj.weight']
 #print(f"Example mask: {example}")
+total_masked = 0
+total_elements = 0
 for k,example in masks.items(): 
     print(f"Layer: {k}")
     print(f"Example mask shape: {example.shape}")
     print("proportion of masked:", sum(example) / example.numel())
+    total_masked += sum(example) / example.numel()
+    total_elements += 1
+
+print(f"average masked: {total_masked / total_elements}")
