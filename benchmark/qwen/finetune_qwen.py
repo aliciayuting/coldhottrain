@@ -127,7 +127,7 @@ dump_cb = PerModuleGradDumper(
     weight_out_dir=weight_out_dir,
 )
 
-#trainer.add_callback(dump_cb)
+trainer.add_callback(dump_cb)
 
 # probe_cb = Probe()
 # trainer.add_callback(probe_cb)

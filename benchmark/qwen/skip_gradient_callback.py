@@ -145,8 +145,8 @@ class SkipGradientCallback(TrainerCallback):
         if optimizer is None:
             print("no optimizer :(")
 
-        if(optimizer):
-            print(optimizer)
+        # if(optimizer):
+        #     print(optimizer)
         #if _is_main():
             #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step}")
 
