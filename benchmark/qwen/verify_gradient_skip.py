@@ -21,7 +21,9 @@ model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16,
     device_map="cpu",
 )
-print(model.named_parameters())
+
+for param in model.named_parameters():
+    print(param[0])
 
 #example = masks['model.layers.11.mlp.up_proj.weight']
 #print(f"Example mask: {example}")
