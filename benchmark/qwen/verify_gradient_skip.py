@@ -68,6 +68,9 @@ for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.na
     if param1.shape != param2.shape:
         print(f"Layer shapes do not match for {name1}: {param1.shape} != {param2.shape}")
         continue
+    if name1 not in masks:
+        print(f"Layer {name1} not found in masks")
+        continue
     for row in range(len(param1)):
         if masks[name1][row] and not torch.equal(param1[row], param2[row]):
             print(f"Layer {name1} has differing weights at row {row}")
