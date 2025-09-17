@@ -1,6 +1,6 @@
 import os
 import torch
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 main_dir = os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-50p-1e-20250916-162317")
 checkpoint_dir = os.path.join(main_dir, "ckpt")
@@ -15,6 +15,7 @@ torch.set_printoptions(profile="full")
 
 # Print Qwen/Qwen2.5-0.5B model layer names (derived from mask keys for speed)
 MODEL = "Qwen/Qwen2.5-0.5B"
+tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL,
     torch_dtype=torch.bfloat16,
