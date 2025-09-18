@@ -222,9 +222,9 @@ if __name__ == "__main__":
 '''
 python neuron_epochwise_drift.py \
     --base /pscratch/sd/l/lsx/runs/opt67b_fsdp_gsm8k \
-    --layer 1 \
+    --layer 0 \
     --e-start 1 \
-    --e-end 10 \
+    --e-end 2 \
     --pattern checkpoint-epoch-{e} \
     --out test.csv
 

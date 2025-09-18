@@ -1,7 +1,8 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
-MODEL = "facebook/opt-13b"
+# MODEL = "facebook/opt-13b"
+MODEL = "Qwen/Qwen2.5-0.5B"
 
 # Load tokenizer & model
 tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
@@ -12,7 +13,9 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 # Simple prompt (feel free to swap for a GSM8K-style problem)
-prompt = "Solve: If a book costs $12 and a pen costs $3, how much for 5 books and 4 pens?\nAnswer:"
+# prompt = "Solve: If a book costs $12 and a pen costs $3, how much for 5 books and 4 pens?\nAnswer:"
+prompt = "### Instruction:\nIf a book costs $12 and a pen costs $3, how much for 5 books and 4 pens?\n\n### Response:"
+
 
 inputs = tok(prompt, return_tensors="pt").to(model.device)
 
