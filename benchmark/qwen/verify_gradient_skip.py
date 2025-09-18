@@ -53,6 +53,8 @@ print("total elements:", total_elements)
 print(f"average masked: {total_masked / total_elements}")
 
 for k,example in masks.items(): 
+    if not "layers" in k:
+        continue
     converted_name = convert_name(k)
     print(f"Converted {k} to {converted_name}")
     # fetch numpy file with name converted_name (already includes .npy) in
