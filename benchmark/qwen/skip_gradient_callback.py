@@ -15,8 +15,8 @@ class SkipGradientCallback(TrainerCallback):
                  epoch_compute_masks=2,
                  zero_bottom_k_percent=0.1,
                  zero_mode="neurons",
-                 freeze_params=False,
                  output_dir="",
+                 use_cold_every_iters=0 #Important that this number should be offset from the epoch size so the cold neurons get different training data every time
                  ):
             self.model = model
             self.epoch_start_track = epoch_start_track
@@ -24,6 +24,7 @@ class SkipGradientCallback(TrainerCallback):
             self.zero_bottom_k_percent = zero_bottom_k_percent
             self.zero_mode = zero_mode
             self.output_dir = output_dir
+            self.use_cold_every_iters = use_cold_every_iters
 
             self._has_computed_masks = False
 
@@ -76,6 +77,7 @@ class SkipGradientCallback(TrainerCallback):
         """Compute and store per-row L2 gradient norms for all 2D+ parameters."""
         scores = []
         param_refs = []  # (name, rows)
+        #Q: can i assume named parameters is alwyas the same order? If it isnt this will break 
         for name, p in self.model.named_parameters():
             if p.grad is None or p.grad.ndim < 2:
                 continue
@@ -87,11 +89,15 @@ class SkipGradientCallback(TrainerCallback):
             l2 = (flat.pow(2).sum(dim=1)).float()  # [rows]
             scores.append(l2)
             param_refs.append((name, rows))
-
-        self._neuron_scores = scores
-        self._neuron_param_refs = param_refs
-        self._total_neuron_rows = int(sum(t.numel() for t in scores)) if scores else 0
-        return scores, param_refs
+        
+        if self._neuron_scores == None:
+            self._neuron_scores = scores
+            self._neuron_param_refs = param_refs
+            self._total_neuron_rows = int(sum(t.numel() for t in scores)) if scores else 0
+        #TODO: do this a smarter way. what if there is a neuron that is 0 90% of the time but huge 10% of the time? Probably want to still keep it as hot
+        else:
+            self._neuron_scores = [x + y for x, y in zip(scores, self._neuron_scores)]
+        #return scores, param_refs
 
     @torch.no_grad()
     def _build_neuron_masks_from_scores(self):
@@ -154,7 +160,14 @@ class SkipGradientCallback(TrainerCallback):
             self._collect_neuron_grad_norms()
         elif self._has_computed_masks:
             #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step} applying fixed masks")
-            self._apply_fixed_masks()
+            #use the cold gradients every use_cold_every_iters steps
+            if self.use_cold_every_iters 
+                if state.global_step % self.use_cold_every_iters != 0:
+                    self._apply_fixed_masks()
+                else:
+                    print("updating cold params")
+            else:
+                self._apply_fixed_masks()
 
 
 

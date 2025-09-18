@@ -9,7 +9,7 @@ import torch.distributed as dist
 from skip_gradient_callback import SkipGradientCallback
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
-RUN_NAME = "neurons-50p-1e"
+RUN_NAME = "neurons-50p-1e-useCold20Iters"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
@@ -114,6 +114,7 @@ skipgradient_cb = SkipGradientCallback(
     zero_mode=ZERO_MODE,
     epoch_start_track=FREEZE_AFTER_EPOCHS-1,   # start tracking gradient norms after this many epochs
     epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
+    use_cold_every_iters=20
     output_dir=output_dir,
 )
 trainer.add_callback(skipgradient_cb)
@@ -127,7 +128,7 @@ dump_cb = PerModuleGradDumper(
     weight_out_dir=weight_out_dir,
 )
 
-trainer.add_callback(dump_cb)
+# trainer.add_callback(dump_cb)
 
 # probe_cb = Probe()
 # trainer.add_callback(probe_cb)
