@@ -3,9 +3,18 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments,
 import torch
 from gradient_callback import *
 from probe import *
-
+import hashlib
+import time
+import torch.distributed as dist
+from skip_gradient_callback import SkipGradientCallback
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
+RUN_NAME = "neurons-50p-1e"
+_RUN_TS = time.strftime("%Y%m%d-%H%M%S")
+SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
+ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
+ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
+FREEZE_AFTER_EPOCHS = 1       # Choose bottom-k once after this many epochs
 
 
 def safe_destroy():
@@ -55,34 +64,36 @@ tokenized_ds = ds.map(format_example, batched=False)
 # Data collator
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
-output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+# output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
 
+weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
 args = TrainingArguments(
     output_dir=f"{output_dir}/ckpt",
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=8,
+    per_device_train_batch_size=16,
+    gradient_accumulation_steps=2,
     # gradient_accumulation_steps=1,
-    num_train_epochs=40,
+    num_train_epochs=30,
     learning_rate=2e-5,
     # fp16=True,
     bf16=True,
     logging_steps=100,
-    save_steps=100,
+    save_strategy="epoch",
+    #save_steps=100,
     # save_total_limit=2,
     ddp_find_unused_parameters=False,
     # max_steps = 16,
 )
 
-
-
-# Trainer
 trainer = Trainer(
     model=model,
     args=args,
     train_dataset=tokenized_ds["train"],
     data_collator=collator,
 )
+
+
 
 num_gpus = torch.cuda.device_count()
 num_samples = len(tokenized_ds["train"])
@@ -94,13 +105,28 @@ print(f"#GPUs: {num_gpus}  Global batch: {global_batch}  Iters/epoch: {iters_per
 # dump_out_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace("/", "_")}-{DATASET.replace('/', '_')}-grad_dump"
 dump_out_dir = f"{output_dir}/grad_dump"
 
+
+
+
+skipgradient_cb = SkipGradientCallback(
+    model=model,
+    zero_bottom_k_percent=ZERO_BOTTOM_K_PERCENT,
+    zero_mode=ZERO_MODE,
+    epoch_start_track=FREEZE_AFTER_EPOCHS-1,   # start tracking gradient norms after this many epochs
+    epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
+    output_dir=output_dir,
+)
+trainer.add_callback(skipgradient_cb)
+
 dump_cb = PerModuleGradDumper(
     out_dir=dump_out_dir,
     model=model,
     capture_steps=100,
     include_bias=True,
-    also_embeddings=False,  # set True if you also want embeddings/lm_head
+    also_embeddings=True,  # set True if you also want embeddings/lm_head
+    weight_out_dir=weight_out_dir,
 )
+
 trainer.add_callback(dump_cb)
 
 # probe_cb = Probe()

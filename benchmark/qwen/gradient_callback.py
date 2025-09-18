@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from transformers import TrainerCallback
-
+from typing import Optional
 
 def _is_main():
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
@@ -20,12 +20,21 @@ class PerModuleGradDumper(TrainerCallback):
                  capture_steps=100,
                  include_bias=False,
                  also_embeddings=False,
+                 weight_out_dir: Optional[str] = None,
                  mkdir_mode=0o755):
         self.out_dir = out_dir
         self.capture_steps = capture_steps
         self.include_bias = bool(include_bias)
         self.also_embeddings = bool(also_embeddings)
         self.mkdir_mode = mkdir_mode
+
+        # weight checkpoints output (sibling to grad_dump by default)
+        if weight_out_dir is None:
+            # default to a sibling of out_dir named weight_dump
+            base = os.path.dirname(os.path.abspath(out_dir))
+            weight_out_dir = os.path.join(base, "weight_dump")
+        self.weight_out_dir = weight_out_dir
+        os.makedirs(self.weight_out_dir, exist_ok=True)
 
         os.makedirs(self.out_dir, exist_ok=True)
         self.index_path = os.path.join(self.out_dir, "index.csv")
@@ -45,8 +54,27 @@ class PerModuleGradDumper(TrainerCallback):
         self._step_in_epoch = 0
         
         self._model = model
+        self._pending_weight_save_step = None
+        # track request to save the *next* step's pre-update weights
+        self._pending_next_pre = False
+        self._pending_next_from_step = None
         
-
+    def _save_full_checkpoint(self, step_tag: str):
+        """Save full model weights via HF save_pretrained under weight_out_dir/step_tag.
+        Only rank0 performs the save.
+        """
+        if not _is_main() or self._model is None:
+            return
+        ckpt_dir = os.path.join(self.weight_out_dir, step_tag)
+        os.makedirs(ckpt_dir, exist_ok=True, mode=self.mkdir_mode)
+        # Save model weights/config (no optimizer states here)
+        try:
+            self._model.save_pretrained(ckpt_dir, safe_serialization=True)
+            print(f" model checkpoints saved at {ckpt_dir}")
+        except TypeError:
+            # for very old HF versions lacking safe_serialization kw
+            self._model.save_pretrained(ckpt_dir)
+            
     # def _is_main(self):
     #     return (self._rank == 0)
 
@@ -79,6 +107,16 @@ class PerModuleGradDumper(TrainerCallback):
         self._step_in_epoch += 1
 
         step = state.global_step
+        
+        # If we previously requested to save the *next* step's pre-update weights,
+        # do it now regardless of capture schedule.
+        if self._pending_next_pre and _is_main():
+            prev = self._pending_next_from_step
+            # Name it by the originating capture step for unambiguous pairing.
+            self._save_full_checkpoint(f"step{prev:06d}_next_pre")
+            self._pending_next_pre = False
+            self._pending_next_from_step = None
+
         # if step not in self.capture_steps:
         #     return
         if step % self.capture_steps != 0:
@@ -87,6 +125,11 @@ class PerModuleGradDumper(TrainerCallback):
             return
 
         print(f"[PerModuleGradDumper] Capturing gradients at step {step}")
+
+        # Save weights *before* the optimizer step for this capture step
+        self._save_full_checkpoint(f"step{step:06d}_pre")
+        # mark this step so we persist the immediate *post* weights below in on_substep_end
+        self._pending_weight_save_step = step
 
         # epoch_float from TrainerState (may be None early on, so guard)
         epoch_float = float(state.epoch) if state.epoch is not None else float(self._epoch_idx)
@@ -201,7 +244,21 @@ class PerModuleGradDumper(TrainerCallback):
         print(f"[PerModuleGradDumper] step={step} epoch_idx={self._epoch_idx} "
               f"step_in_epoch={self._step_in_epoch} dumped {len(rows)} tensors -> {step_dir}")
 
-    
+
+
+    def on_substep_end(self, args, state, control, **kwargs):
+        # Only act if a capture step armed a post-update save
+        if self._pending_weight_save_step is None:
+            return
+        pending = self._pending_weight_save_step
+        # Save post-update now (rank-0 inside helper)
+        self._save_full_checkpoint(f"step{pending:06d}_post")
+        # Arm a one-shot save for the *next* step's pre-update weights
+        self._pending_next_pre = True
+        self._pending_next_from_step = pending
+        # Clear this step's pending flag
+        self._pending_weight_save_step = None
+
     # def on_substep_end(self, args, state, control, **kwargs):
     #     # Fires after optimizer step; here global_step has just incremented
     #     if _is_main():
