@@ -15,10 +15,11 @@ class MLP(nn.Module):
         return x
     
 class MLP_Frozen(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim, trainable_indices):
+    def __init__(self, in_dim, hidden_dim, out_dim, trainable_indices_list):
         super().__init__()
-        self.fc1 = nn.Linear(in_dim, hidden_dim)
-        self.fc2 = LinearElementwise(hidden_dim, out_dim, trainable_indices)
+        # self.fc1 = nn.Linear(in_dim, hidden_dim)
+        self.fc1 = LinearElementwise(in_dim, hidden_dim, trainable_indices_list[0])
+        self.fc2 = LinearElementwise(hidden_dim, out_dim, trainable_indices_list[1])
 
     def forward(self, x):
         x = self.fc1(x)
@@ -59,7 +60,7 @@ class LinearElementwise(nn.Module):
 
         idx = torch.as_tensor(train_indices, dtype=torch.long)  # shape [nnz, 2]
         assert idx.ndim == 2 and idx.size(1) == 2
-        self.register_buffer("idx", idx)                        # [nnz,2]
+        # self.register_buffer("idx", idx)                        # [nnz,2]
         self.register_buffer("row", idx[:,0])
         self.register_buffer("col", idx[:,1])
 
@@ -110,3 +111,22 @@ class LinearElementwise(nn.Module):
 
         # y = torch.relu(y)
         return y
+    
+def get_size(module):
+    total = 0
+    print("Module size breakdown:")
+
+    # parameters
+    print("Parameters:")
+    for name, param in module.named_parameters():
+        total += param.numel() * param.element_size()
+        print(f"  {name:10s} {tuple(param.shape)} {param.numel()} {param.numel()*param.element_size()} B ")
+
+    # buffers
+    print("Buffers:")
+    for name, buf in module.named_buffers():
+        total += buf.numel() * buf.element_size()
+        print(f"  {name:10s} {tuple(buf.shape)} {buf.numel()} {buf.numel()*buf.element_size()} B ")
+
+    print(f"Total size: {total} bytes")
+    return total
