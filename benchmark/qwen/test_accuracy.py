@@ -10,12 +10,12 @@ SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 EPOCH_LENGTH = 407
 VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
-main_dir = os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-50p-1e-20250917-163518")
+main_dir = os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-regular")
 checkpoint_dir = os.path.join(main_dir, "ckpt")
 gradient_dir = os.path.join(main_dir, "grad_dump/step004500")
 masks_path = os.path.join(main_dir, "neuron_masks.pt")
 
-MODEL = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*27}")
+MODEL = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*28}")
 
 tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
 # If tokenizer has no pad token (common for causal LMs), set it:
@@ -92,4 +92,5 @@ with torch.inference_mode():
         print(f"Processed {token_count} tokens", end="\r")
 
 eval_loss = loss_sum / max(token_count, 1)
+print()
 print(f"Eval loss: {eval_loss:.4f}")
