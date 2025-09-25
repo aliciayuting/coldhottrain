@@ -58,7 +58,7 @@ tokenized_ds["validation"] = tokenized_ds.pop("test")
 
 train_dataset = tokenized_ds["train"]
 eval_dataset = tokenized_ds["validation"]
-eval_dataset = eval_dataset.remove_columns(['instruction', 'input', 'output'])
+eval_dataset = eval_dataset.remove_columns(['instruction', 'input', 'output', 'text'])
 
 # Data collator
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
