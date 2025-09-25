@@ -15,6 +15,7 @@ SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
 ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
 FREEZE_AFTER_EPOCHS = 1       # Choose bottom-k once after this many epochs
+VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 def safe_destroy():
@@ -61,6 +62,18 @@ def format_example(example):
 
 tokenized_ds = ds.map(format_example, batched=False)
 
+
+split_seed = 42
+
+tokenized_ds = tokenized_ds["train"].train_test_split(
+    test_size=VALIDATION_FRACTION,
+    seed=split_seed,
+)
+tokenized_ds["validation"] = tokenized_ds.pop("test")
+
+train_dataset = tokenized_ds["train"]
+eval_dataset = tokenized_ds["validation"]
+
 # Data collator
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
@@ -89,14 +102,15 @@ args = TrainingArguments(
 trainer = Trainer(
     model=model,
     args=args,
-    train_dataset=tokenized_ds["train"],
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
     data_collator=collator,
 )
 
 
 
 num_gpus = torch.cuda.device_count()
-num_samples = len(tokenized_ds["train"])
+num_samples = len(train_dataset)
 global_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps * max(1, num_gpus)
 iters_per_epoch = (num_samples + global_batch - 1) // global_batch
 print(f"#GPUs: {num_gpus}  Global batch: {global_batch}  Iters/epoch: {iters_per_epoch}")
@@ -114,7 +128,7 @@ skipgradient_cb = SkipGradientCallback(
     zero_mode=ZERO_MODE,
     epoch_start_track=FREEZE_AFTER_EPOCHS-1,   # start tracking gradient norms after this many epochs
     epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
-    use_cold_every_iters=20
+    use_cold_every_iters=20,
     output_dir=output_dir,
 )
 trainer.add_callback(skipgradient_cb)
@@ -137,6 +151,7 @@ dump_cb = PerModuleGradDumper(
 
 # Start training
 trainer.train()
+
 
 
 safe_destroy()
