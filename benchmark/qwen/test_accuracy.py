@@ -65,7 +65,7 @@ eval_dataset = eval_dataset.remove_columns(['instruction', 'input', 'output', 't
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
 #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("cpu")
+device = torch.device("cuda")
 model.to(device)
 model.eval()
 
@@ -74,7 +74,7 @@ eval_loader = DataLoader(
     batch_size=8,
     shuffle=False,
     collate_fn=collator,
-    pin_memory=device.type == "cpu",
+    pin_memory=device.type == "cuda",
 )
 
 loss_sum = 0.0
