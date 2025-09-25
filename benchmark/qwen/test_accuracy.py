@@ -72,7 +72,7 @@ eval_loader = DataLoader(
     batch_size=8,
     shuffle=False,
     collate_fn=collator,
-    pin_memory=device.type == "cuda",
+    pin_memory=device.type == "cpu",
 )
 
 loss_sum = 0.0
