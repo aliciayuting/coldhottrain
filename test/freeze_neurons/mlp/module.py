@@ -226,6 +226,10 @@ class LinearColWise(nn.Module):
             self.register_buffer("b_cold", None, persistent=False)
             self.b_hot = None
 
+        self.s0 = torch.cuda.current_stream("cuda")
+        self.s_cold = torch.cuda.Stream(device="cuda")
+        self.s_hot  = torch.cuda.Stream(device="cuda")
+
     @torch.no_grad()
     def set_cold_from_full(self, full_weight: torch.Tensor, full_bias: torch.Tensor | None = None):
         """Optional utility to refresh the cold part from a full matrix."""
@@ -248,6 +252,32 @@ class LinearColWise(nn.Module):
         y.index_copy_(1, self.cold_idx, out_cold)
         y.index_copy_(1, self.hot_idx,  out_hot)
         return y
+    
+
+        # # Launch cold (no grad) on its own stream
+        # with torch.no_grad():
+        #     with torch.cuda.stream(self.s_cold):
+        #         out_cold = F.linear(
+        #             x, self.W_cold, self.b_cold if self.has_bias else None
+        #         )
+        #         # Keep x alive on this stream until the op finishes
+        #         x.record_stream(self.s_cold)
+
+        # # Launch hot (with grad) on its own stream
+        # with torch.cuda.stream(self.s_hot):
+        #     out_hot = F.linear(
+        #         x, self.W_hot, self.b_hot if self.has_bias else None
+        #     )
+        #     x.record_stream(self.s_hot)
+
+        # # Sync both side streams with the default stream before stitching
+        # self.s0.wait_stream(self.s_cold)
+        # self.s0.wait_stream(self.s_hot)
+
+        # # Now it's safe to use the results on the default stream
+        # y.index_copy_(1, self.cold_idx, out_cold)
+        # y.index_copy_(1, self.hot_idx,  out_hot)
+        # return y
 
     @staticmethod
     def from_linear(base: nn.Linear, hot_idx: torch.Tensor) -> "LinearColWise":
@@ -261,3 +291,12 @@ class LinearColWise(nn.Module):
             init_bias=None if base.bias is None else base.bias.data.clone(),
         )
         return mod
+    
+def print_params(model):
+    print("Trainable parameters:")
+    for name, param in model.named_parameters():
+        print(f"  {name:10s} {param.data} ")
+
+    print("Buffers:")
+    for name, buf in model.named_buffers():
+        print(f"  {name:10s} {buf}  ")

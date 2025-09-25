@@ -13,6 +13,8 @@ def print_gpu_memoory_usage():
     print(f"Allocated: {allocated/1024**2:.2f} MB")
     print(f"Cached: {cached/1024**2:.2f} MB")
 
+    return allocated, cached
+
 def calculate_linear_layer_size(in_features, out_features, bias=True):
     total_params = in_features * out_features
     if bias:
