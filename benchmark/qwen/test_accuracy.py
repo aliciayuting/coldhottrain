@@ -10,7 +10,7 @@ SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 EPOCH_LENGTH = 407
 VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
-main_dir = os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-regular")
+main_dir = os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-10p-1e-20250916-102450")
 checkpoint_dir = os.path.join(main_dir, "ckpt")
 gradient_dir = os.path.join(main_dir, "grad_dump/step004500")
 masks_path = os.path.join(main_dir, "neuron_masks.pt")
