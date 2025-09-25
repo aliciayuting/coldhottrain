@@ -58,6 +58,7 @@ tokenized_ds["validation"] = tokenized_ds.pop("test")
 
 train_dataset = tokenized_ds["train"]
 eval_dataset = tokenized_ds["validation"]
+print(eval_dataset)
 eval_dataset = eval_dataset.remove_columns(['instruction', 'input', 'output', 'text'])
 
 # Data collator
@@ -88,6 +89,7 @@ with torch.inference_mode():
         outputs = model(**batch)
         loss_sum += outputs.loss.item() * valid_tokens
         token_count += valid_tokens
+        print(f"Processed {token_count} tokens", end="\r")
 
 eval_loss = loss_sum / max(token_count, 1)
 print(f"Eval loss: {eval_loss:.4f}")
