@@ -9,7 +9,7 @@ import torch.distributed as dist
 from skip_gradient_callback import SkipGradientCallback
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
-RUN_NAME = "neurons-80p-1e-randommask"
+RUN_NAME = "neurons-0p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
@@ -19,7 +19,7 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 0.2
+RANDOM_HOT_K_PERCENT = 1.0
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 def safe_destroy():
