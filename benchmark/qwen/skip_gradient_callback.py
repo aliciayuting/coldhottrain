@@ -66,7 +66,7 @@ class SkipGradientCallback(TrainerCallback):
             param_refs.append((name, rows))
             total_rows += rows
         self._total_neuron_rows = total_rows
-        k = int(total_rows * self.random_hot_k_percent)
+        k = int(total_rows * (1-self.random_hot_k_percent))
         if k <= 0:
             return {}
 
@@ -297,7 +297,8 @@ class SkipGradientCallback(TrainerCallback):
         """Check that self._fixed_neuron_masks are identical across ranks.
         Call only on a synchronized step (require_backward_grad_sync == True)."""
         zeroed = sum(int(m.sum().item()) for m in self.neuron_masks.values()) if self.neuron_masks else 0
-        print(f"[skipgradient] masks: zeroing {zeroed}/{self._total_neuron_rows} elements (~{(zeroed/max(1,self._total_neuron_rows))*100:.2f}%).")
+        if _is_main():
+            print(f"[skipgradient] masks: zeroing {zeroed}/{self._total_neuron_rows} elements (~{(zeroed/max(1,self._total_neuron_rows))*100:.2f}%).")
         if not (dist.is_available() and dist.is_initialized()):
             return  # single GPU or non-DDP
 
