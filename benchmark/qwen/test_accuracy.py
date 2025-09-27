@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 
 DATASET = "tatsu-lab/alpaca"
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
@@ -45,7 +45,8 @@ def format_example(example):
 
     return tok(prompt, truncation=True, padding="max_length", max_length=512)
 
-tokenized_ds = ds.map(format_example, batched=False)
+
+tokenized_ds: DatasetDict = ds.map(format_example, batched=False) # type: ignore
 
 
 split_seed = 42

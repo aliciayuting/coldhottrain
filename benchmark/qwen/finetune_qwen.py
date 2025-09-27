@@ -9,7 +9,7 @@ import torch.distributed as dist
 from skip_gradient_callback import SkipGradientCallback
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
-RUN_NAME = "neurons-50p-1e-useCold20Iters"
+RUN_NAME = "neurons-80p-1e-randommask"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
@@ -17,6 +17,10 @@ ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
 FREEZE_AFTER_EPOCHS = 1       # Choose bottom-k once after this many epochs
 VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
+
+MODE="random"
+RANDOM_HOT_K_PERCENT = 0.2
+CHANGE_RANDOM_EVERY_ITERS = 100
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
@@ -73,7 +77,8 @@ tokenized_ds["validation"] = tokenized_ds.pop("test")
 
 train_dataset = tokenized_ds["train"]
 eval_dataset = tokenized_ds["validation"]
-
+print(eval_dataset)
+print(train_dataset)
 # Data collator
 collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
 
@@ -130,6 +135,9 @@ skipgradient_cb = SkipGradientCallback(
     epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
     use_cold_every_iters=20,
     output_dir=output_dir,
+    mode=MODE,
+    random_hot_k_percent=RANDOM_HOT_K_PERCENT,
+    change_random_every_iters=CHANGE_RANDOM_EVERY_ITERS,
 )
 trainer.add_callback(skipgradient_cb)
 

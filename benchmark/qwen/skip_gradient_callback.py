@@ -1,4 +1,4 @@
-from transformers import TrainerCallback, PreTrainedModel
+from transformers import TrainerCallback, PreTrainedModel, TrainerControl, TrainerState, TrainingArguments
 import torch.distributed as dist
 import torch
 import hashlib
@@ -7,17 +7,23 @@ import os
 def _is_main():
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
 
+#modes "default" | "random"
 #Q: would it be more efficient to calc the gradient mask on rank 0 and broadcast it to all ranks?
 class SkipGradientCallback(TrainerCallback):
     def __init__(self,
-                 model: PreTrainedModel,
-                 epoch_start_track=1,
-                 epoch_compute_masks=2,
-                 zero_bottom_k_percent=0.1,
-                 zero_mode="neurons",
-                 output_dir="",
-                 use_cold_every_iters=0 #Important that this number should be offset from the epoch size so the cold neurons get different training data every time
-                 ):
+                model: PreTrainedModel,
+                zero_mode="neurons",
+                output_dir="",
+                mode = "default",
+                #options for default mode
+                epoch_start_track=1,
+                epoch_compute_masks=2,
+                zero_bottom_k_percent=0.1,
+                use_cold_every_iters=0, #Important that this number should be offset from the epoch size so the cold neurons get different training data every time
+                #options for random mode
+                random_hot_k_percent=0.2,
+                change_random_every_iters=100,
+                ):
             self.model = model
             self.epoch_start_track = epoch_start_track
             self.epoch_compute_masks = epoch_compute_masks
@@ -25,6 +31,12 @@ class SkipGradientCallback(TrainerCallback):
             self.zero_mode = zero_mode
             self.output_dir = output_dir
             self.use_cold_every_iters = use_cold_every_iters
+
+
+            self.mode = mode
+            self.random_hot_k_percent = random_hot_k_percent
+            self.change_random_every_iters = change_random_every_iters
+
 
             self._has_computed_masks = False
 
@@ -35,6 +47,44 @@ class SkipGradientCallback(TrainerCallback):
             self._neuron_param_refs = None     # List[Tuple[name, rows]] matching scores
             self._total_neuron_rows = 0
 
+    def save_masks(self, appendage=""):
+        if self.output_dir and _is_main():
+            os.makedirs(self.output_dir, exist_ok=True)
+            cpu_masks = {k: v.detach().to("cpu", dtype=torch.bool) for k, v in self.neuron_masks.items()}
+            out_path = os.path.join(self.output_dir, f"neuron_masks{appendage}.pt")
+            torch.save(cpu_masks, out_path)
+            print(f"[skipgradient] saved neuron masks to {out_path}")
+        
+    def _get_random_neuron_masks(self):
+        """Build boolean row masks per parameter using random selection."""
+        param_refs = []  # (name, rows)
+        total_rows = 0
+        for name, p in self.model.named_parameters():
+            if p.ndim < 2:
+                continue
+            rows = p.shape[0]
+            param_refs.append((name, rows))
+            total_rows += rows
+
+        k = int(total_rows * self.random_hot_k_percent)
+        if k <= 0:
+            return {}
+
+        # Randomly select k unique row indices across all rows of all relevant params
+        all_indices = torch.randperm(total_rows)[:k].sort().values
+
+        # Build boolean row masks per param
+        masks = {}
+        offset = 0
+        for (name, rows) in param_refs:
+            this_slice = all_indices[(all_indices >= offset) & (all_indices < offset + rows)] - offset
+            if this_slice.numel() > 0:
+                row_mask = torch.zeros(rows, dtype=torch.bool, device=next(self.model.parameters()).device)
+                row_mask[this_slice] = True
+                masks[name] = row_mask
+            offset += rows
+        return masks
+
     def _compute_masks(self):
         if self._has_computed_masks:
             return
@@ -44,13 +94,7 @@ class SkipGradientCallback(TrainerCallback):
         if self.zero_mode == "neurons":
             self.neuron_masks = self._build_neuron_masks_from_scores()
             # save masks to output_dir
-            if self.output_dir and _is_main():
-                os.makedirs(self.output_dir, exist_ok=True)
-                cpu_masks = {k: v.detach().to("cpu", dtype=torch.bool) for k, v in self.neuron_masks.items()}
-                out_path = os.path.join(self.output_dir, "neuron_masks.pt")
-                torch.save(cpu_masks, out_path)
-                print(f"[skipgradient] saved neuron masks to {out_path}")
-            
+            self.save_masks()
         else:
             raise ValueError(f"Invalid zero_mode: {self.zero_mode}")
         
@@ -133,9 +177,7 @@ class SkipGradientCallback(TrainerCallback):
         if _is_main():
             print(f"[skipgradient][on_train_begin] max_steps={state.max_steps} epochs={args.num_train_epochs}")
 
-    def on_epoch_begin(self, args, state, control, **kwargs):
-        if _is_main():
-            print(f"[skipgradient][on_epoch_begin] epoch_float={state.epoch}")
+    def on_epoch_begin_default(self, args, state, control, **kwargs):
         if int(state.epoch) >= self.epoch_start_track and not self._has_computed_masks: # type: ignore
             self.is_tracking_grads = True
         if int(state.epoch) == self.epoch_compute_masks and not self._has_computed_masks: # type: ignore
@@ -143,33 +185,49 @@ class SkipGradientCallback(TrainerCallback):
             self._ddp_assert_neuron_masks_identical()
             self.is_tracking_grads = False  # stop tracking after computing masks
 
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        if _is_main():
+            print(f"[skipgradient][on_epoch_begin] epoch_float={state.epoch}")
+        if self.mode == "default":
+            self.on_epoch_begin_default(args, state, control, **kwargs)
+        elif self.mode == "random":
+            pass
+
     def on_train_batch_end(self, args, state, control, **kwargs):
         if _is_main():
             print(f"[skipgradient][on_train_batch_end] global_step={state.global_step}")
-    def on_pre_optimizer_step(self, args, state, control, **kwargs):
-        optimizer = kwargs.get("optimizer", None)
-        if optimizer is None:
-            print("no optimizer :(")
-
-        # if(optimizer):
-        #     print(optimizer)
-        #if _is_main():
-            #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step}")
-
+    
+    def on_pre_optimizer_step_default(self, args, state, control, **kwargs):
         if self.is_tracking_grads and not self._has_computed_masks:
             self._collect_neuron_grad_norms()
         elif self._has_computed_masks:
             #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step} applying fixed masks")
             #use the cold gradients every use_cold_every_iters steps
-            if self.use_cold_every_iters 
+            if self.use_cold_every_iters:
                 if state.global_step % self.use_cold_every_iters != 0:
                     self._apply_fixed_masks()
                 else:
                     print("updating cold params")
             else:
                 self._apply_fixed_masks()
+    def on_pre_optimizer_step_random(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        if state.global_step % self.change_random_every_iters == 0 or not self.neuron_masks:
+            if _is_main():
+                print(f"[skipgradient][on_pre_optimizer_step_random] global_step={state.global_step} generating new random masks")
+                self.neuron_masks = self._get_random_neuron_masks()
+            self._sync_neuron_masks_across_ranks()
+            self._ddp_assert_neuron_masks_identical()
+            self.save_masks(appendage=f"_{state.global_step}")
+        self._apply_fixed_masks()
 
-
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        optimizer = kwargs.get("optimizer", None)
+        if optimizer is None:
+            print("no optimizer :(")
+        if self.mode == "default":
+            self.on_pre_optimizer_step_default(args, state, control, **kwargs)
+        elif self.mode == "random":
+            self.on_pre_optimizer_step_random(args, state, control, **kwargs)
 
     # def on_step_end(self, args, state, control, **kwargs):
     #     # Fires after optimizer step; here global_step has just incremented
@@ -180,6 +238,58 @@ class SkipGradientCallback(TrainerCallback):
     #     # Fires after optimizer step; here global_step has just incremented
     #     if _is_main():
     #         print(f"[skipgradient][on_substep_end] global_step={state.global_step}")
+
+
+    @torch.no_grad()
+    def _sync_neuron_masks_across_ranks(self):
+        if not (dist.is_available() and dist.is_initialized()):
+            return
+
+        world_size = dist.get_world_size()
+        if world_size <= 1:
+            return
+
+        names = []
+        row_counts = []
+        devices = []
+        for name, p in self.model.named_parameters():
+            if p.ndim >= 2:
+                names.append(name)
+                row_counts.append(p.shape[0])
+                devices.append(p.device)
+
+        if not names:
+            self.neuron_masks = {}
+            return
+
+        total_rows = sum(row_counts)
+        if total_rows == 0:
+            self.neuron_masks = {}
+            return
+
+        rank = dist.get_rank()
+        buffer_device = devices[0]
+        flat_masks = torch.zeros(total_rows, dtype=torch.uint8, device=buffer_device)
+
+        if rank == 0:
+            offset = 0
+            for name, rows in zip(names, row_counts):
+                mask = self.neuron_masks.get(name)
+                if mask is not None:
+                    flat_masks[offset:offset + rows].copy_(mask.to(device=buffer_device, dtype=torch.uint8))
+                offset += rows
+
+        dist.broadcast(flat_masks, src=0)
+
+        new_masks = {}
+        offset = 0
+        for name, rows, device in zip(names, row_counts, devices):
+            slice_view = flat_masks[offset:offset + rows]
+            if slice_view.any():
+                new_masks[name] = slice_view.to(device=device, dtype=torch.bool)
+            offset += rows
+
+        self.neuron_masks = new_masks
 
 
     @torch.no_grad()
