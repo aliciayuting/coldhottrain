@@ -3,6 +3,10 @@ import torch.distributed as dist
 import torch
 import hashlib
 import os
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 def _is_main():
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
@@ -105,7 +109,9 @@ class SkipGradientCallback(TrainerCallback):
         """Apply previously computed fixed masks to current gradients."""
         if self.zero_mode == "neurons":
             if not self.neuron_masks:
-                raise RuntimeError("No neuron masks computed yet")
+                #raise RuntimeError("No neuron masks computed yet")
+                logger.debug("No neuron masks computed yet")
+                return
             for name, p in self.model.named_parameters():
                 if p.grad is None or p.grad.ndim < 2:
                     continue

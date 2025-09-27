@@ -7,6 +7,13 @@ import hashlib
 import time
 import torch.distributed as dist
 from skip_gradient_callback import SkipGradientCallback
+import logging
+
+logging.basicConfig(
+        level=getattr(logging, os.environ.get('LOG_LEVEL', 'DEBUG').upper(), logging.INFO),
+        format="[%(levelname)s] %(message)s"
+    )
+
 MODEL = "Qwen/Qwen2.5-0.5B"
 DATASET = "tatsu-lab/alpaca"
 RUN_NAME = "neurons-0p"
