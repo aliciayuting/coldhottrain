@@ -4,18 +4,19 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
 from datasets import load_dataset, DatasetDict
+import sys
 
 DATASET = "tatsu-lab/alpaca"
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
-EPOCH_LENGTH = 407
+EPOCH_LENGTH = 366
 VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
-main_dir = os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-10p-1e-20250916-102450")
+main_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-80p-1e-randommask-20250927-002901")
 checkpoint_dir = os.path.join(main_dir, "ckpt")
-gradient_dir = os.path.join(main_dir, "grad_dump/step004500")
-masks_path = os.path.join(main_dir, "neuron_masks.pt")
+gradient_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(main_dir, "grad_dump/step004500")
+masks_path = sys.argv[3] if len(sys.argv) > 3 else os.path.join(main_dir, "neuron_masks_0.pt")
 
-MODEL = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*28}")
+MODEL = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*30}")
 
 tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
 # If tokenizer has no pad token (common for causal LMs), set it:
