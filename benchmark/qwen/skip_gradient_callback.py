@@ -65,7 +65,7 @@ class SkipGradientCallback(TrainerCallback):
             rows = p.shape[0]
             param_refs.append((name, rows))
             total_rows += rows
-
+        self._total_neuron_rows = total_rows
         k = int(total_rows * self.random_hot_k_percent)
         if k <= 0:
             return {}
