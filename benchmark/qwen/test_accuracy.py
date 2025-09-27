@@ -15,8 +15,8 @@ main_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRATCH, "jamal_ru
 checkpoint_dir = os.path.join(main_dir, "ckpt")
 gradient_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(main_dir, "grad_dump/step004500")
 masks_path = sys.argv[3] if len(sys.argv) > 3 else os.path.join(main_dir, "neuron_masks_0.pt")
-
-MODEL = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*30}")
+epoch_num = int(sys.argv[4]) if len(sys.argv) > 4 else 30
+MODEL = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*epoch_num}")
 
 tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
 # If tokenizer has no pad token (common for causal LMs), set it:
