@@ -43,6 +43,34 @@ MODE="random"
 RANDOM_HOT_K_PERCENT = 1.0
 CHANGE_RANDOM_EVERY_ITERS = 100
 
+# output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
+
+weight_out_dir = f"{output_dir}/weight_dump"
+# Training arguments
+args = TrainingArguments(
+    output_dir=f"{output_dir}/ckpt",
+    logging_dir=f"{output_dir}/logs",
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=8,
+    gradient_accumulation_steps=2,
+    # gradient_accumulation_steps=1,
+    num_train_epochs=NUM_EPOCHS,
+    learning_rate=2e-5,
+    # fp16=True,
+    bf16=True,
+    logging_steps=100,
+    save_strategy="epoch",
+    eval_strategy="steps",
+    eval_steps=EVAL_LOSS_STEPS,
+    weight_decay=0.01,
+    #save_steps=100,
+    # save_total_limit=2,
+    ddp_find_unused_parameters=False,
+    # max_steps = 16,
+)
+
+
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
         try:
@@ -89,12 +117,13 @@ def tokenize_function_mnli(example):
         max_length=512
     )
 
-if DATASET == "sst2":
-    tokenized_ds = ds.map(tokenize_function_sst, batched=False)
-elif DATASET == "mnli":
-    tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
-else:
-    raise ValueError(f"Unsupported dataset: {DATASET}")
+with args.main_process_first(desc="tokenize"):
+    if DATASET == "sst2":
+        tokenized_ds = ds.map(tokenize_function_sst, batched=False)
+    elif DATASET == "mnli":
+        tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
+    else:
+        raise ValueError(f"Unsupported dataset: {DATASET}")
 
 
 print(tokenized_ds)
@@ -112,32 +141,6 @@ def compute_metrics(eval_pred):
     
     return accuracy  # Returns {"accuracy": 0.923}
 
-# output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
-output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
-
-weight_out_dir = f"{output_dir}/weight_dump"
-# Training arguments
-args = TrainingArguments(
-    output_dir=f"{output_dir}/ckpt",
-    logging_dir=f"{output_dir}/logs",
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=8,
-    gradient_accumulation_steps=2,
-    # gradient_accumulation_steps=1,
-    num_train_epochs=NUM_EPOCHS,
-    learning_rate=2e-5,
-    # fp16=True,
-    bf16=True,
-    logging_steps=100,
-    save_strategy="epoch",
-    eval_strategy="steps",
-    eval_steps=EVAL_LOSS_STEPS,
-    weight_decay=0.01,
-    #save_steps=100,
-    # save_total_limit=2,
-    ddp_find_unused_parameters=False,
-    # max_steps = 16,
-)
 
 
 trainer = Trainer(
