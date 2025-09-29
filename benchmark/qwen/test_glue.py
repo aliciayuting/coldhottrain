@@ -2,8 +2,9 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
+from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, DataCollatorForLanguageModeling, DataCollatorWithPadding
 from datasets import load_dataset, DatasetDict
+import evaluate
 import sys
 
 DATASET = "sst2"
@@ -24,48 +25,44 @@ tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
     
-model = AutoModelForCausalLM.from_pretrained(
+    
+model = AutoModelForSequenceClassification.from_pretrained(
     MODEL,
     torch_dtype=torch.bfloat16,
+    num_labels=NUM_LABELS
     # device_map="auto")
 )
+model.config.pad_token_id = tok.pad_token_id
 
-ds = load_dataset(DATASET)
-
+ds = load_dataset("nyu-mll/glue",DATASET)
 
 
 # Preprocess into prompt–response format
-def format_example(example):
-    instruction = example["instruction"]
-    input_text = example.get("input", "")
-    response = example["output"]
+def tokenize_function(examples):
+    return tok(
+        examples["sentence"],
+        padding="max_length",
+        truncation=True,
+        max_length=512
+    )
 
-    if input_text:
-        prompt = f"### Instruction:\n{instruction}\n\n### Input:\n{input_text}\n\n### Response:\n{response}"
-    else:
-        prompt = f"### Instruction:\n{instruction}\n\n### Response:\n{response}"
-
-    return tok(prompt, truncation=True, padding="max_length", max_length=512)
+tokenized_ds = ds.map(tokenize_function, batched=False)
 
 
-tokenized_ds: DatasetDict = ds.map(format_example, batched=False) # type: ignore
-
-
-split_seed = 42
-
-tokenized_ds = tokenized_ds["train"].train_test_split(
-    test_size=VALIDATION_FRACTION,
-    seed=split_seed,
-)
-tokenized_ds["validation"] = tokenized_ds.pop("test")
-
-train_dataset = tokenized_ds["train"]
-eval_dataset = tokenized_ds["validation"]
-print(eval_dataset)
-eval_dataset = eval_dataset.remove_columns(['instruction', 'input', 'output', 'text'])
-
+print(tokenized_ds)
 # Data collator
-collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
+data_collator = DataCollatorWithPadding(tokenizer=tok)
+
+accuracy_metric = evaluate.load("accuracy")
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    
+    # Calculate accuracy
+    accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+    
+    return accuracy  # Returns {"accuracy": 0.923}
 
 #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cuda")
@@ -73,27 +70,53 @@ model.to(device)
 model.eval()
 
 eval_loader = DataLoader(
-    eval_dataset,
+    tokenized_ds['test'],
     batch_size=8,
     shuffle=False,
-    collate_fn=collator,
+    collate_fn=data_collator,
     pin_memory=device.type == "cuda",
 )
-
+all_predictions = []
+all_labels = []
 loss_sum = 0.0
-token_count = 0
+num_batches = 0
 
 with torch.inference_mode():
     for batch in eval_loader:
-        batch = {k: v.to(device) for k, v in batch.items()}
-        valid_tokens = (batch["labels"] != -100).sum().item()
-        if valid_tokens == 0:
-            continue
-        outputs = model(**batch)
-        loss_sum += outputs.loss.item() * valid_tokens
-        token_count += valid_tokens
-        print(f"Processed {token_count} tokens", end="\r")
+        # Move batch to device
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        labels = batch["label"].to(device)  # Note: "label" not "labels"
+        
+        # Forward pass
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels
+        )
+        
+        # Get predictions
+        logits = outputs.logits  # Shape: (batch_size, num_labels)
+        predictions = torch.argmax(logits, dim=-1)
+        
+        # Collect predictions and labels
+        all_predictions.extend(predictions.cpu().numpy())
+        all_labels.extend(labels.cpu().numpy())
+        
+        # Accumulate loss
+        loss_sum += outputs.loss.item()
+        num_batches += 1
+        
+        print(f"Processed {num_batches * 8} samples", end="\r")
 
-eval_loss = loss_sum / max(token_count, 1)
+# Compute final metrics
+accuracy = accuracy_metric.compute(
+    predictions=all_predictions,
+    references=all_labels
+)
+
+avg_loss = loss_sum / num_batches
+
 print()
-print(f"Eval loss: {eval_loss:.4f}")
+print(f"Test Loss: {avg_loss:.4f}")
+print(f"Test Accuracy: {accuracy['accuracy']:.4f}")
