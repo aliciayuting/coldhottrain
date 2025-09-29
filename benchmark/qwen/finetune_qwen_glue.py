@@ -21,13 +21,14 @@ MODEL = "Qwen/Qwen2.5-0.5B"
 #DATASET = "sst2"
 #VALIDATION_SET = "validation"
 #NUM_LABELS = 2
-EVAL_LOSS_STEPS=100
+#EVAL_LOSS_STEPS=100
 
 DATASET = "mnli"
 VALIDATION_SET = "validation_matched"
 #VALIDATION_SET = "validation_mismatched"
 NUM_LABELS = 3
 EVAL_LOSS_STEPS=500
+NUM_EPOCHS=3
 
 RUN_NAME = "base"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -123,7 +124,7 @@ args = TrainingArguments(
     per_device_eval_batch_size=8,
     gradient_accumulation_steps=2,
     # gradient_accumulation_steps=1,
-    num_train_epochs=30,
+    num_train_epochs=NUM_EPOCHS,
     learning_rate=2e-5,
     # fp16=True,
     bf16=True,
