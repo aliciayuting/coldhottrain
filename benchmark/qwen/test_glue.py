@@ -7,9 +7,17 @@ from datasets import load_dataset, DatasetDict
 import evaluate
 import sys
 
-DATASET = "sst2"
-NUM_LABELS = 2
-EPOCH_LENGTH = 527
+# DATASET = "sst2"
+# VALIDATION_SET = "validation"
+# NUM_LABELS = 2
+# EPOCH_LENGTH = 527
+
+DATASET = "mnli"
+VALIDATION_SET = "validation_matched"
+NUM_LABELS = 3
+EPOCH_LENGTH = 3068
+
+
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 
 
@@ -36,17 +44,29 @@ model.config.pad_token_id = tok.pad_token_id
 
 ds = load_dataset("nyu-mll/glue",DATASET)
 
-
 # Preprocess into prompt–response format
-def tokenize_function(examples):
+def tokenize_function_sst(examples):
     return tok(
         examples["sentence"],
         padding="max_length",
         truncation=True,
         max_length=512
     )
+#WILL NOT WORK WITH BATCHED!!!!!
+def tokenize_function_mnli(example):
+    return tok(
+        f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
+        padding="max_length",
+        truncation=True,
+        max_length=512
+    )
 
-tokenized_ds = ds.map(tokenize_function, batched=False)
+if DATASET == "sst2":
+    tokenized_ds = ds.map(tokenize_function_sst, batched=False)
+elif DATASET == "mnli":
+    tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
+else:
+    raise ValueError(f"Unsupported dataset: {DATASET}")
 
 tokenized_ds.set_format(
     type="torch",
@@ -65,7 +85,7 @@ model.to(device)
 model.eval()
 
 eval_loader = DataLoader(
-    tokenized_ds['validation'],
+    tokenized_ds[VALIDATION_SET],
     batch_size=8,
     shuffle=False,
     collate_fn=data_collator,
