@@ -1,3 +1,9 @@
+"""
+Implementation decisions:
+zero optimizer or skip optimizer step?
+"""
+
+
 from transformers import TrainerCallback, PreTrainedModel, TrainerControl, TrainerState, TrainingArguments
 import torch.distributed as dist
 import torch
@@ -226,6 +232,7 @@ class SkipGradientCallback(TrainerCallback):
             self.save_masks(appendage=f"_{state.global_step}")
         self._apply_fixed_masks()
 
+    #TODO: zero out optimizer? do we want to zero out the optimizer state, or do we just want to skip it when the gradient is zeroed out but keep the state and momentum?
     def on_pre_optimizer_step(self, args, state, control, **kwargs):
         optimizer = kwargs.get("optimizer", None)
         if optimizer is None:

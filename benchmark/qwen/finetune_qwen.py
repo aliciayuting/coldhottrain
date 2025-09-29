@@ -10,7 +10,7 @@ from skip_gradient_callback import SkipGradientCallback
 import logging
 
 logging.basicConfig(
-        level=getattr(logging, os.environ.get('LOG_LEVEL', 'DEBUG').upper(), logging.INFO),
+        level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
         format="[%(levelname)s] %(message)s"
     )
 
