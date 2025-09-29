@@ -48,21 +48,16 @@ def tokenize_function(examples):
 
 tokenized_ds = ds.map(tokenize_function, batched=False)
 
+tokenized_ds.set_format(
+    type="torch",
+    columns=["input_ids", "attention_mask", "label"]
+)
 
 print(tokenized_ds)
 # Data collator
 data_collator = DataCollatorWithPadding(tokenizer=tok)
 
 accuracy_metric = evaluate.load("accuracy")
-
-def compute_metrics(eval_pred):
-    logits, labels = eval_pred
-    predictions = np.argmax(logits, axis=-1)
-    
-    # Calculate accuracy
-    accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
-    
-    return accuracy  # Returns {"accuracy": 0.923}
 
 #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cuda")
