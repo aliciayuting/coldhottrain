@@ -95,6 +95,7 @@ weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
 args = TrainingArguments(
     output_dir=f"{output_dir}/ckpt",
+    logging_dir=f"{output_dir}/logs",
     per_device_train_batch_size=16,
     per_gpu_eval_batch_size=8,
     gradient_accumulation_steps=2,
