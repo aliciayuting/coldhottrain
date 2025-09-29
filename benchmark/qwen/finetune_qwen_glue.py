@@ -58,8 +58,7 @@ model = AutoModelForSequenceClassification.from_pretrained(
 )
 model.config.pad_token_id = tok.pad_token_id
 
-# Load Alpaca-52K dataset
-ds = load_dataset(DATASET)
+ds = load_dataset("nyu-mll/glue", DATASET)
 
 # Preprocess into prompt–response format
 def tokenize_function(examples):
