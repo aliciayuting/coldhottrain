@@ -13,9 +13,10 @@ import sys
 # EPOCH_LENGTH = 527
 
 DATASET = "mnli"
-VALIDATION_SET = "validation_matched"
+#VALIDATION_SET = "validation_matched"
+VALIDATION_SET = "validation_mismatched"
 NUM_LABELS = 3
-EPOCH_LENGTH = 3068
+#EPOCH_LENGTH = 3068
 
 
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")

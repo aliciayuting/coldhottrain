@@ -21,10 +21,13 @@ MODEL = "Qwen/Qwen2.5-0.5B"
 #DATASET = "sst2"
 #VALIDATION_SET = "validation"
 #NUM_LABELS = 2
+EVAL_LOSS_STEPS=100
 
 DATASET = "mnli"
 VALIDATION_SET = "validation_matched"
+#VALIDATION_SET = "validation_mismatched"
 NUM_LABELS = 3
+EVAL_LOSS_STEPS=500
 
 RUN_NAME = "base"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -127,7 +130,7 @@ args = TrainingArguments(
     logging_steps=100,
     save_strategy="epoch",
     eval_strategy="steps",
-    eval_steps=100,
+    eval_steps=EVAL_LOSS_STEPS,
     weight_decay=0.01,
     #save_steps=100,
     # save_total_limit=2,
