@@ -1,4 +1,5 @@
 from datasets import load_dataset
+import evaluate
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPadding, TrainingArguments, Trainer, DataCollatorForLanguageModeling, AutoModelForSequenceClassification
 import torch
 from gradient_callback import *
@@ -76,6 +77,16 @@ print(tokenized_ds)
 # Data collator
 data_collator = DataCollatorWithPadding(tokenizer=tok)
 
+accuracy_metric = evaluate.load("accuracy")
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    
+    # Calculate accuracy
+    accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+    
+    return accuracy  # Returns {"accuracy": 0.923}
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
 output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -94,7 +105,8 @@ args = TrainingArguments(
     bf16=True,
     logging_steps=100,
     save_strategy="epoch",
-    eval_strategy="epoch",
+    eval_strategy="steps",
+    eval_steps=100,
     weight_decay=0.01,
     #save_steps=100,
     # save_total_limit=2,
@@ -102,12 +114,14 @@ args = TrainingArguments(
     # max_steps = 16,
 )
 
+
 trainer = Trainer(
     model=model,
     args=args,
     train_dataset=tokenized_ds["train"],
     eval_dataset=tokenized_ds["validation"],
     data_collator=data_collator,
+    compute_metrics=compute_metrics,
 )
 
 
