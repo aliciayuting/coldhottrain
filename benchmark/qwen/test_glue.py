@@ -79,6 +79,8 @@ num_batches = 0
 with torch.inference_mode():
     for batch in eval_loader:
         # Move batch to device
+        print("Batch keys:", batch.keys())
+        print("Batch structure:", {k: v.shape if hasattr(v, 'shape') else type(v) for k, v in batch.items()})
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["label"].to(device)  # Note: "label" not "labels"
