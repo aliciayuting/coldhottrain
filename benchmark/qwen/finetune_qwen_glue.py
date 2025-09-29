@@ -16,8 +16,16 @@ logging.basicConfig(
     )
 
 MODEL = "Qwen/Qwen2.5-0.5B"
-DATASET = "sst2"
-NUM_LABELS = 2
+
+
+#DATASET = "sst2"
+#VALIDATION_SET = "validation"
+#NUM_LABELS = 2
+
+DATASET = "mnli"
+VALIDATION_SET = "validation_matched"
+NUM_LABELS = 3
+
 RUN_NAME = "base"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
@@ -61,15 +69,28 @@ model.config.pad_token_id = tok.pad_token_id
 ds = load_dataset("nyu-mll/glue", DATASET)
 
 # Preprocess into prompt–response format
-def tokenize_function(examples):
+def tokenize_function_sst(examples):
     return tok(
         examples["sentence"],
         padding="max_length",
         truncation=True,
         max_length=512
     )
+#WILL NOT WORK WITH BATCHED!!!!!
+def tokenize_function_mnli(example):
+    return tok(
+        f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
+        padding="max_length",
+        truncation=True,
+        max_length=512
+    )
 
-tokenized_ds = ds.map(tokenize_function, batched=False)
+if DATASET == "sst2":
+    tokenized_ds = ds.map(tokenize_function_sst, batched=False)
+elif DATASET == "mnli":
+    tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
+else:
+    raise ValueError(f"Unsupported dataset: {DATASET}")
 
 
 print(tokenized_ds)
@@ -119,7 +140,7 @@ trainer = Trainer(
     model=model,
     args=args,
     train_dataset=tokenized_ds["train"],
-    eval_dataset=tokenized_ds["validation"],
+    eval_dataset=tokenized_ds[VALIDATION_SET],
     data_collator=data_collator,
     compute_metrics=compute_metrics,
 )
