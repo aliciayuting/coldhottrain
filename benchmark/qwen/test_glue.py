@@ -83,7 +83,7 @@ with torch.inference_mode():
         print("Batch structure:", {k: v.shape if hasattr(v, 'shape') else type(v) for k, v in batch.items()})
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-        labels = batch["label"].to(device)  # Note: "label" not "labels"
+        labels = batch["labels"].to(device)  # Note: "label" not "labels"
         
         # Forward pass
         outputs = model(
