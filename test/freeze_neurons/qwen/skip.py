@@ -40,7 +40,8 @@ REPO_ID  = "Qwen/Qwen2.5-0.5B"
 REVISION = None   # pin commit hash if you want reproducibility
 
 SNAPSHOT = Path(
-    "~/.cache/huggingface/transformers/"
+    # "~/.cache/huggingface/transformers/"
+    "/pscratch/sd/l/lsx/.cache/huggingface/transformers/"
     "models--Qwen--Qwen2.5-0.5B/snapshots/060db6499f32faf8b98477b0a26969ef7d8b9987/"
 )
 
@@ -91,7 +92,8 @@ tok = AutoTokenizer.from_pretrained(str(SNAPSHOT), local_files_only=True, use_fa
 model = AutoModelForCausalLM.from_pretrained(
     str(SNAPSHOT),
     local_files_only=True,
-    torch_dtype=torch.float32,
+    # torch_dtype=torch.float32,
+    torch_dtype=torch.bfloat16,
     device_map=None,
 )
 print("Loaded model:", type(model).__name__)
