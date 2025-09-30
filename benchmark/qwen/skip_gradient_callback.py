@@ -19,6 +19,7 @@ def _is_main():
 
 #modes "default" | "random"
 #Q: would it be more efficient to calc the gradient mask on rank 0 and broadcast it to all ranks?
+#Q: should we freeze the biases?
 class SkipGradientCallback(TrainerCallback):
     def __init__(self,
                 model: PreTrainedModel,

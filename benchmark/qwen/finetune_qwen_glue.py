@@ -30,7 +30,7 @@ NUM_LABELS = 3
 EVAL_LOSS_STEPS=500
 NUM_EPOCHS=3
 
-RUN_NAME = "base"
+RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
@@ -40,7 +40,7 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 1.0
+RANDOM_HOT_K_PERCENT = 0.2
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"

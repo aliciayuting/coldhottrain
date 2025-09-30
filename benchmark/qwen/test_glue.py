@@ -45,7 +45,7 @@ model = AutoModelForSequenceClassification.from_pretrained(
 )
 model.config.pad_token_id = tok.pad_token_id
 
-ds = load_dataset("nyu-mll/glue",DATASET)
+ds = load_dataset("nyu-mll/glue",DATASET)[VALIDATION_SET]
 
 # Preprocess into prompt–response format
 def tokenize_function_sst(examples):
