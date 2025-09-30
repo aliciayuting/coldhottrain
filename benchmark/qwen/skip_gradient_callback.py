@@ -11,6 +11,8 @@ import hashlib
 import os
 import logging
 
+from benchmark.qwen.custom_adam import MaskedAdamW
+
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +233,13 @@ class SkipGradientCallback(TrainerCallback):
             self._sync_neuron_masks_across_ranks()
             self._ddp_assert_neuron_masks_identical()
             self.save_masks(appendage=f"_{state.global_step}")
+            optimizer = kwargs.get("optimizer", None)
+            if optimizer is not None and type(optimizer) == MaskedAdamW:
+                optimizer.set_mask_dict(self.neuron_masks, strict=True)
+            else:
+                logger.warning("SkipGradientCallback: optimizer is not MaskedAdamW; cannot set masks in optimizer.")
+                
+                
         self._apply_fixed_masks()
 
     #TODO: zero out optimizer? do we want to zero out the optimizer state, or do we just want to skip it when the gradient is zeroed out but keep the state and momentum?

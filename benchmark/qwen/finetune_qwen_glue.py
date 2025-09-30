@@ -2,6 +2,7 @@ from datasets import load_dataset
 import evaluate
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPadding, TrainingArguments, Trainer, DataCollatorForLanguageModeling, AutoModelForSequenceClassification
 import torch
+from custom_adam import MaskedAdamW
 from gradient_callback import *
 from probe import *
 import hashlib
@@ -142,6 +143,11 @@ def compute_metrics(eval_pred):
     return accuracy  # Returns {"accuracy": 0.923}
 
 
+opt_kwargs = {
+    "mask_dict": {},
+    "named_parameters": dict(model.named_parameters()),
+    "freeze_state": "none",  # or "decay" or "full" per your preference
+}
 
 trainer = Trainer(
     model=model,
@@ -150,7 +156,9 @@ trainer = Trainer(
     eval_dataset=tokenized_ds[VALIDATION_SET],
     data_collator=data_collator,
     compute_metrics=compute_metrics,
+    optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
 )
+
 
 
 
