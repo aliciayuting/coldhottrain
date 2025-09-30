@@ -88,7 +88,7 @@ model.to(device)
 model.eval()
 
 eval_loader = DataLoader(
-    tokenized_ds[VALIDATION_SET],
+    tokenized_ds,
     batch_size=8,
     shuffle=False,
     collate_fn=data_collator,
