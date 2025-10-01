@@ -163,8 +163,15 @@ trainer = Trainer(
     compute_metrics=compute_metrics,
     optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
 )
-
-
+print("Trainer optimizer:")
+print(trainer.optimizer)
+print("Optimizer Hyperparameters:")
+for i, param_group in enumerate(trainer.optimizer.param_groups):
+    print(f"  Param Group {i}:")
+    for key, value in param_group.items():
+        # Exclude 'params' as it refers to the model parameters themselves, not hyperparameters
+        if key != 'params':
+            print(f"    {key}: {value}")
 
 
 num_gpus = torch.cuda.device_count()
