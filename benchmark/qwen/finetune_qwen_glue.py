@@ -32,7 +32,7 @@ NUM_EPOCHS=3
 # EVAL_LOSS_STEPS=200
 # NUM_EPOCHS=3
 
-RUN_NAME = "sst2-random-50p"
+RUN_NAME = "random-100p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 
@@ -43,7 +43,7 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 0.5
+RANDOM_HOT_K_PERCENT = 1.0
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
@@ -67,7 +67,7 @@ args = TrainingArguments(
     eval_strategy="steps",
     eval_steps=EVAL_LOSS_STEPS,
     weight_decay=0.01,
-    save_steps=50,
+    save_steps=100,
     # save_total_limit=2,
     ddp_find_unused_parameters=False,
     # max_steps = 16,
