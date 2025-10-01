@@ -17,9 +17,7 @@ from iteration_time_callback import IterationTimeCallback
 
 
 from module import *
-
-
-skip_ratio = 0.5
+from helper import *
 
 logging.basicConfig(
         level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
@@ -55,9 +53,9 @@ MODE="random"
 RANDOM_HOT_K_PERCENT = 0.2
 CHANGE_RANDOM_EVERY_ITERS = 100
 
-output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+# output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
 # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
-# output_dir = f"/mnt/coldhot/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
+output_dir = f"/mnt/coldhot/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
 
 
 weight_out_dir = f"{output_dir}/weight_dump"
@@ -82,7 +80,7 @@ args = TrainingArguments(
     #save_steps=100,
     # save_total_limit=2,
     ddp_find_unused_parameters=False,
-    max_steps = 16,
+    max_steps = 10,
     # logging_strategy="no",
     # disable_tqdm=True,
     report_to="none"
@@ -102,117 +100,25 @@ def safe_destroy():
             pass
 
 
-# Load tokenizer & model
-tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
-# If tokenizer has no pad token (common for causal LMs), set it:
-if tok.pad_token is None:
-    tok.pad_token = tok.eos_token
-    
-model = AutoModelForSequenceClassification.from_pretrained(
-    MODEL,
-    torch_dtype=torch.bfloat16,
-    num_labels=NUM_LABELS
-    # device_map="auto")
-)
-model.config.pad_token_id = tok.pad_token_id
+# if main program
+# Preprocess into prompt–response format
+def tokenize_function_sst(examples):
+    return tok(
+        examples["sentence"],
+        padding="max_length",
+        truncation=True,
+        max_length=512
+    )
+#WILL NOT WORK WITH BATCHED!!!!!
+def tokenize_function_mnli(example):
+    return tok(
+        f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
+        padding="max_length",
+        truncation=True,
+        max_length=512
+    )
 
 
-
-
-
-
-
-
-def get_decoder_layers(m: nn.Module):
-    """
-    Return the list-like container of decoder blocks for common HF decoder-only models.
-    Works for Qwen2ForCausalLM (m.model.layers).
-    """
-    if hasattr(m, "model") and hasattr(m.model, "layers"):
-        return m.model.layers
-    if hasattr(m, "transformer") and hasattr(m.transformer, "layers"):
-        return m.transformer.layers
-    if hasattr(m, "layers"):
-        return m.layers
-    raise AttributeError("Could not locate decoder layers (tried model.layers / transformer.layers / layers).")
-
-# ---- your previously defined helpers (from my last message) ----
-def make_hot_idx(out_features: int, frac: float | None = None, idx: torch.Tensor | None = None, device=None):
-    if idx is not None:
-        hot = torch.as_tensor(idx, dtype=torch.long, device=device)
-        assert hot.ndim == 1 and hot.numel() > 0
-        assert hot.min().item() >= 0 and hot.max().item() < out_features
-        return hot
-    assert frac is not None and 0.0 <= frac <= 1.0
-    k = max(0, min(out_features, int(round(frac * out_features))))
-    if k == 0:
-        return torch.zeros(0, dtype=torch.long, device=device)
-    perm = torch.randperm(out_features, device=device)
-    return perm[:k].sort().values
-
-def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> LinearColWise:
-    assert isinstance(mod, nn.Linear)
-    hot_idx = hot_idx.to(mod.weight.device)
-    wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx)
-    wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
-    return wrapped
-
-# ---- apply to layer 23 of Qwen2.5 -------------------------------------------
-policy_by_name = {
-    "self_attn.q_proj": 0.30,
-    "self_attn.k_proj": 0.30,
-    "self_attn.v_proj": 0.30,
-    "self_attn.o_proj": 0.30,
-    "mlp.up_proj":      0.30,
-    "mlp.down_proj":    0.30,
-    # "mlp.gate_proj":  0.30,  # include if you want to split the gate too
-}
-
-
-
-if skip_ratio > 0.0:
-    print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
-
-    layers = get_decoder_layers(model)   # <-- the fix
-    layer_idx = 23
-    for i, layer in enumerate(layers):
-
-        mapping = {
-            "self_attn.q_proj": layer.self_attn.q_proj,
-            "self_attn.k_proj": layer.self_attn.k_proj,
-            "self_attn.v_proj": layer.self_attn.v_proj,
-            "self_attn.o_proj": layer.self_attn.o_proj,
-            "mlp.up_proj":      layer.mlp.up_proj,
-            "mlp.down_proj":    layer.mlp.down_proj,
-            # "mlp.gate_proj": layer.mlp.gate_proj,
-        }
-        
-
-
-        for name, linear in mapping.items():
-            assert isinstance(linear, nn.Linear), f"{name} expected nn.Linear, got {type(linear)}"
-            # print(f"Processing {name}: {tuple(linear.weight.shape)}")
-            out_features = linear.out_features
-            # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
-            hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
-            wrapped = replace_linear_with_colwise(linear, hot_idx)
-            if name.startswith("self_attn."):
-                setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
-            else:
-                setattr(layer.mlp,       name.split(".", 1)[1], wrapped)
-
-        # # quick sanity check
-        # print(type(layer.self_attn.q_proj), layer.self_attn.q_proj.W_hot.shape, layer.self_attn.q_proj.W_cold.shape)
-        # print(type(layer.mlp.up_proj),      layer.mlp.up_proj.W_hot.shape,      layer.mlp.up_proj.W_cold.shape)
-
-else:
-    print("SKIP is set to False, not replacing linear layers with LinearColWise.")
-
-
-
-
-
-ds = load_dataset("nyu-mll/glue", DATASET)
 
 # Preprocess into prompt–response format
 def tokenize_function_sst(examples):
@@ -231,105 +137,192 @@ def tokenize_function_mnli(example):
         max_length=512
     )
 
-with args.main_process_first(desc="tokenize"):
-    if DATASET == "sst2":
-        tokenized_ds = ds.map(tokenize_function_sst, batched=False)
-    elif DATASET == "mnli":
-        tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
+if __name__ == "__main__":
+    # read arguments from command line
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--benchmark-time", action="store_true", help="Benchmark time using IterationTimeCallback")
+    parser.add_argument("--skip-ratio", type=float, default=0.0, help="Skip Ratio for LinearColWise")
+    args_cmd = parser.parse_args()
+    skip_ratio = args_cmd.skip_ratio
+    benchmark_time = args_cmd.benchmark_time
+
+    print(f"skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}")
+
+
+
+    # Load tokenizer & model
+    tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
+    # If tokenizer has no pad token (common for causal LMs), set it:
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+        
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL,
+        torch_dtype=torch.bfloat16,
+        num_labels=NUM_LABELS
+        # device_map="auto")
+    )
+    model.config.pad_token_id = tok.pad_token_id
+
+
+    if skip_ratio > 0.0:
+        print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
+
+        layers = get_decoder_layers(model)   # <-- the fix
+        layer_idx = 23
+        for i, layer in enumerate(layers):
+
+            mapping = {
+                "self_attn.q_proj": layer.self_attn.q_proj,
+                "self_attn.k_proj": layer.self_attn.k_proj,
+                "self_attn.v_proj": layer.self_attn.v_proj,
+                "self_attn.o_proj": layer.self_attn.o_proj,
+                "mlp.up_proj":      layer.mlp.up_proj,
+                "mlp.down_proj":    layer.mlp.down_proj,
+                # "mlp.gate_proj": layer.mlp.gate_proj,
+            }
+            
+
+
+            for name, linear in mapping.items():
+                assert isinstance(linear, nn.Linear), f"{name} expected nn.Linear, got {type(linear)}"
+                # print(f"Processing {name}: {tuple(linear.weight.shape)}")
+                out_features = linear.out_features
+                # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
+                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                wrapped = replace_linear_with_colwise(linear, hot_idx)
+                if name.startswith("self_attn."):
+                    setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
+                else:
+                    setattr(layer.mlp,       name.split(".", 1)[1], wrapped)
+
+            # # quick sanity check
+            # print(type(layer.self_attn.q_proj), layer.self_attn.q_proj.W_hot.shape, layer.self_attn.q_proj.W_cold.shape)
+            # print(type(layer.mlp.up_proj),      layer.mlp.up_proj.W_hot.shape,      layer.mlp.up_proj.W_cold.shape)
+
     else:
-        raise ValueError(f"Unsupported dataset: {DATASET}")
-
-
-print(tokenized_ds)
-# Data collator
-data_collator = DataCollatorWithPadding(tokenizer=tok)
-
-accuracy_metric = evaluate.load("accuracy")
-
-def compute_metrics(eval_pred):
-    logits, labels = eval_pred
-    predictions = np.argmax(logits, axis=-1)
-    
-    # Calculate accuracy
-    accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
-    
-    return accuracy  # Returns {"accuracy": 0.923}
-
-
-opt_kwargs = {
-    "mask_dict": {},
-    "named_parameters": dict(model.named_parameters()),
-    "freeze_state": "none",  # or "decay" or "full" per your preference
-}
-
-iter_times = []
-trainer = Trainer(
-    model=model,
-    args=args,
-    train_dataset=tokenized_ds["train"],
-    eval_dataset=tokenized_ds[VALIDATION_SET],
-    data_collator=data_collator,
-    compute_metrics=compute_metrics,
-    # optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
-    callbacks=[IterationTimeCallback(iter_times)],
-)
+        print("SKIP is set to False, not replacing linear layers with LinearColWise.")
 
 
 
 
-num_gpus = torch.cuda.device_count()
-num_samples = len(tokenized_ds["train"])
-global_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps * max(1, num_gpus)
-iters_per_epoch = (num_samples + global_batch - 1) // global_batch
-print(f"#GPUs: {num_gpus}  Global batch: {global_batch}  Iters/epoch: {iters_per_epoch}")
 
-
-# dump_out_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace("/", "_")}-{DATASET.replace('/', '_')}-grad_dump"
-dump_out_dir = f"{output_dir}/grad_dump"
+    ds = load_dataset("nyu-mll/glue", DATASET)
 
 
 
-
-# skipgradient_cb = SkipGradientCallback(
-#     model=model,
-#     zero_bottom_k_percent=ZERO_BOTTOM_K_PERCENT,
-#     zero_mode=ZERO_MODE,
-#     epoch_start_track=FREEZE_AFTER_EPOCHS-1,   # start tracking gradient norms after this many epochs
-#     epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
-#     use_cold_every_iters=20,
-#     output_dir=output_dir,
-#     mode=MODE,
-#     random_hot_k_percent=RANDOM_HOT_K_PERCENT,
-#     change_random_every_iters=CHANGE_RANDOM_EVERY_ITERS,
-# )
-# trainer.add_callback(skipgradient_cb)
-
-# dump_cb = PerModuleGradDumper(
-#     out_dir=dump_out_dir,
-#     model=model,
-#     capture_steps=100,
-#     include_bias=True,
-#     also_embeddings=True,  # set True if you also want embeddings/lm_head
-#     # weight_out_dir=weight_out_dir,
-# )
-
-# trainer.add_callback(dump_cb)
-
-# probe_cb = Probe()
-# trainer.add_callback(probe_cb)
+    with args.main_process_first(desc="tokenize"):
+        if DATASET == "sst2":
+            tokenized_ds = ds.map(tokenize_function_sst, batched=False)
+        elif DATASET == "mnli":
+            tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
+        else:
+            raise ValueError(f"Unsupported dataset: {DATASET}")
 
 
+    print(tokenized_ds)
+    # Data collator
+    data_collator = DataCollatorWithPadding(tokenizer=tok)
 
-# Start training
-trainer.train()
+    accuracy_metric = evaluate.load("accuracy")
+
+    def compute_metrics(eval_pred):
+        logits, labels = eval_pred
+        predictions = np.argmax(logits, axis=-1)
+        
+        # Calculate accuracy
+        accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+        
+        return accuracy  # Returns {"accuracy": 0.923}
+
+
+    opt_kwargs = {
+        "mask_dict": {},
+        "named_parameters": dict(model.named_parameters()),
+        "freeze_state": "none",  # or "decay" or "full" per your preference
+    }
+
+    time_callback = IterationTimeCallback(iter_times=None)
+    trainer = Trainer(
+        model=model,
+        args=args,
+        train_dataset=tokenized_ds["train"],
+        eval_dataset=tokenized_ds[VALIDATION_SET],
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+        # optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
+        callbacks=[time_callback] if benchmark_time else [],
+    )
 
 
 
-print("Iteration times (s):", iter_times)
-print("Average iteration time (s):", sum(iter_times)/len(iter_times))
+
+    num_gpus = torch.cuda.device_count()
+    # num_gpus = 1
+    num_samples = len(tokenized_ds["train"])
+    global_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps * max(1, num_gpus)
+    iters_per_epoch = (num_samples + global_batch - 1) // global_batch
+    print(f"#GPUs: {num_gpus}  Global batch: {global_batch}  Iters/epoch: {iters_per_epoch}")
+
+
+    # dump_out_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace("/", "_")}-{DATASET.replace('/', '_')}-grad_dump"
+    dump_out_dir = f"{output_dir}/grad_dump"
 
 
 
-# trainer.save_model(f"{output_dir}/final_only_model")
 
-safe_destroy()
+    # skipgradient_cb = SkipGradientCallback(
+    #     model=model,
+    #     zero_bottom_k_percent=ZERO_BOTTOM_K_PERCENT,
+    #     zero_mode=ZERO_MODE,
+    #     epoch_start_track=FREEZE_AFTER_EPOCHS-1,   # start tracking gradient norms after this many epochs
+    #     epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
+    #     use_cold_every_iters=20,
+    #     output_dir=output_dir,
+    #     mode=MODE,
+    #     random_hot_k_percent=RANDOM_HOT_K_PERCENT,
+    #     change_random_every_iters=CHANGE_RANDOM_EVERY_ITERS,
+    # )
+    # trainer.add_callback(skipgradient_cb)
+
+    # dump_cb = PerModuleGradDumper(
+    #     out_dir=dump_out_dir,
+    #     model=model,
+    #     capture_steps=100,
+    #     include_bias=True,
+    #     also_embeddings=True,  # set True if you also want embeddings/lm_head
+    #     # weight_out_dir=weight_out_dir,
+    # )
+
+    # trainer.add_callback(dump_cb)
+
+    # probe_cb = Probe()
+    # trainer.add_callback(probe_cb)
+
+
+
+    # Start training
+    trainer.train()
+
+
+    # check if this process is rank 0 before accessing time_callback.iter_times
+    if benchmark_time and (not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+
+        iter_times = time_callback.iter_times
+        warmup = 5
+        iter_times = iter_times[warmup:]  # skip first few warmup steps
+        avg_time = sum(iter_times)/len(iter_times) if len(iter_times) > 0 else float('nan')
+
+        print("Iteration times (s):", iter_times)
+        print("Average iteration time (s):", avg_time)
+
+        # wrote to a csv file
+        with open(f"iteration_times.csv", "a") as f:
+            f.write(f"{skip_ratio},{avg_time}\n")
+
+
+
+    # trainer.save_model(f"{output_dir}/final_only_model")
+
+    safe_destroy()
