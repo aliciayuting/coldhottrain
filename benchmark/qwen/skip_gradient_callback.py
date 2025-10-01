@@ -240,7 +240,7 @@ class SkipGradientCallback(TrainerCallback):
                 logger.info("SkipGradientCallback: set new random masks in optimizer.")
             else:
                 logger.warning("SkipGradientCallback: optimizer is not MaskedAdamW; cannot set masks in optimizer.")
-                logger.warning(f"type(optimizer)={type(optimizer)}")
+                logger.warning(f"type(optimizer)={type(optimizer.optimizer)}")
                 
                 
         self._apply_fixed_masks()
