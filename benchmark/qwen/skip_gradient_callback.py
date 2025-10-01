@@ -11,7 +11,7 @@ import hashlib
 import os
 import logging
 
-from benchmark.qwen.custom_adam import MaskedAdamW
+from custom_adam import MaskedAdamW
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,7 @@ def _is_main():
 #modes "default" | "random"
 #Q: would it be more efficient to calc the gradient mask on rank 0 and broadcast it to all ranks?
 #Q: should we freeze the biases?
+#TODO: don't mask out final layer!!!!
 class SkipGradientCallback(TrainerCallback):
     def __init__(self,
                 model: PreTrainedModel,
