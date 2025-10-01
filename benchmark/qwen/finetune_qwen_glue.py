@@ -163,6 +163,7 @@ trainer = Trainer(
     compute_metrics=compute_metrics,
     optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
 )
+trainer.create_optimizer()
 print("Trainer optimizer:")
 print(trainer.optimizer)
 print("Optimizer Hyperparameters:")
