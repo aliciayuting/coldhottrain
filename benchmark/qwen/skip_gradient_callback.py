@@ -75,7 +75,7 @@ class SkipGradientCallback(TrainerCallback):
         param_refs = []  # (name, rows)
         total_rows = 0
         for name, p in self.model.named_parameters():
-            if p.ndim < 2:
+            if p.ndim < 2 or 'model' not in name:
                 continue
             rows = p.shape[0]
             param_refs.append((name, rows))
