@@ -162,7 +162,7 @@ trainer = Trainer(
     eval_dataset=tokenized_ds[VALIDATION_SET],
     data_collator=data_collator,
     compute_metrics=compute_metrics,
-    #optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
+    optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
 )
 trainer.create_optimizer()
 print("Trainer optimizer:")
