@@ -127,6 +127,7 @@ model2 = AutoModelForSequenceClassification.from_pretrained(
 )
 
 # Compare weights of model1 and model2
+audit = 0
 for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
     if name1 != name2:
         print(f"Layer names do not match: {name1} != {name2}")
@@ -143,5 +144,12 @@ for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.na
             for col in range(len(param1[row])):
                 if param1[row][col] != param2[row][col]:
                     print(f"Layer {name1} has differing weights at row {row}, col {col}: {param1[row][col]} != {param2[row][col]}")
+        if audit % 1000 == 0 and masks[name1][row]==False:
+            print(f"auditing row {row} of layer {name1}, should not be equal")
+            if torch.equal(param1[row], param2[row]):
+                print(f"FAIL: Layer {name1} row {row} should differ but is equal.")
+            else:
+                print(f"OK: Layer {name1} row {row} differs as expected.")
+            audit += 1
 
 
