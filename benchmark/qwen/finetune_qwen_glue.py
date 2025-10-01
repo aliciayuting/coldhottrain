@@ -31,9 +31,10 @@ NUM_LABELS = 3
 EVAL_LOSS_STEPS=500
 NUM_EPOCHS=3
 
-RUN_NAME = "random-20p"
+RUN_NAME = "random-50p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
+
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
 ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
 FREEZE_AFTER_EPOCHS = 1       # Choose bottom-k once after this many epochs
@@ -41,7 +42,7 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 0.2
+RANDOM_HOT_K_PERCENT = 0.5
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
@@ -71,6 +72,9 @@ args = TrainingArguments(
     # max_steps = 16,
 )
 
+
+if dist.is_available() and dist.is_initialized():
+    print(f"RANK {dist.get_rank()} / {dist.get_world_size()} LOCAL_RANK {int(os.environ.get('LOCAL_RANK', '-1'))}")
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
