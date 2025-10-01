@@ -7,16 +7,16 @@ from datasets import load_dataset, DatasetDict
 import evaluate
 import sys
 
-# DATASET = "sst2"
-# VALIDATION_SET = "validation"
-# NUM_LABELS = 2
-# EPOCH_LENGTH = 527
+DATASET = "sst2"
+VALIDATION_SET = "validation"
+NUM_LABELS = 2
+EPOCH_LENGTH = 527
 
-DATASET = "mnli"
-#VALIDATION_SET = "validation_matched"
-VALIDATION_SET = "validation_mismatched"
-NUM_LABELS = 3
-EPOCH_LENGTH = 3068
+# DATASET = "mnli"
+# #VALIDATION_SET = "validation_matched"
+# VALIDATION_SET = "validation_mismatched"
+# NUM_LABELS = 3
+# EPOCH_LENGTH = 3068
 
 
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
