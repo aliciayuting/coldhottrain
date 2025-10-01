@@ -152,6 +152,7 @@ opt_kwargs = {
     "mask_dict": {},
     "named_parameters": dict(model.named_parameters()),
     "freeze_state": "none",  # or "decay" or "full" per your preference
+    "lr": 2e-5,
 }
 
 trainer = Trainer(
