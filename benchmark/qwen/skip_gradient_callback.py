@@ -213,6 +213,12 @@ class SkipGradientCallback(TrainerCallback):
         if _is_main():
             print(f"[skipgradient][on_train_batch_end] global_step={state.global_step}")
     
+    def _unwrap_optimizer(self, opt):
+        # Walk through any wrappers until we hit the real torch optimizer
+        while hasattr(opt, "optimizer"):   # AcceleratedOptimizer has .optimizer
+            opt = opt.optimizer
+        return opt
+
     def on_pre_optimizer_step_default(self, args, state, control, **kwargs):
         if self.is_tracking_grads and not self._has_computed_masks:
             self._collect_neuron_grad_norms()
@@ -226,6 +232,7 @@ class SkipGradientCallback(TrainerCallback):
                     print("updating cold params")
             else:
                 self._apply_fixed_masks()
+                
     def on_pre_optimizer_step_random(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         if state.global_step % self.change_random_every_iters == 0:
             if _is_main():
@@ -235,12 +242,16 @@ class SkipGradientCallback(TrainerCallback):
             self._ddp_assert_neuron_masks_identical()
             self.save_masks(appendage=f"_{state.global_step}")
             optimizer = kwargs.get("optimizer", None)
-            if optimizer is not None and type(optimizer.optimizer) == MaskedAdamW:
-                optimizer.optimizer.set_mask_dict(self.neuron_masks, strict=True)
+            if optimizer is None:
+                print("no optimizer :(")
+                return
+            optimizer = self._unwrap_optimizer(optimizer)
+            if optimizer is not None and type(optimizer) == MaskedAdamW:
+                optimizer.set_mask_dict(self.neuron_masks, strict=True)
                 logger.info("SkipGradientCallback: set new random masks in optimizer.")
             else:
                 logger.warning("SkipGradientCallback: optimizer is not MaskedAdamW; cannot set masks in optimizer.")
-                logger.warning(f"type(optimizer)={type(optimizer.optimizer)}")
+                logger.warning(f"type(optimizer)={type(optimizer)}")
                 
                 
         self._apply_fixed_masks()
@@ -319,6 +330,76 @@ class SkipGradientCallback(TrainerCallback):
 
 
     @torch.no_grad()
+    def _ddp_assert_neuron_masks_identical(self):
+        """Check that self._fixed_neuron_masks are identical across ranks.
+        Call only on a synchronized step (require_backward_grad_sync == True)."""
+        zeroed = sum(int(m.sum().item()) for m in self.neuron_masks.values()) if self.neuron_masks else 0
+        if _is_main():
+            print(f"[skipgradient] masks: zeroing {zeroed}/{self._total_neuron_rows} elements (~{(zeroed/max(1,self._total_neuron_rows))*100:.2f}%).")
+        if not (dist.is_available() and dist.is_initialized()):
+            return  # single GPU or non-DDP
+
+
+        world_size = dist.get_world_size()
+        print(f"[MaskCheck] Verifying neuron masks across {world_size} ranks...")
+        rank = dist.get_rank()
+
+        # Canonical param list: all 2D+ params in named order
+        names = []
+        shapes = []
+        for name, p in self.model.named_parameters():
+            if p.ndim >= 2:
+                names.append(name)
+                shapes.append(p.shape)
+
+        # Build a vector of int64 checksums, one per param in 'names'
+        checks = []
+        for (name, shape) in zip(names, shapes):
+            rows = shape[0]
+            mask = self.neuron_masks.get(name, None)
+            if mask is None:
+                # Treat as all-zeros (no rows selected)
+                mask_cpu = torch.zeros(rows, dtype=torch.bool).cpu()
+            else:
+                # Ensure correct length and on CPU
+                assert mask.ndim == 1 and mask.numel() == rows, f"Row mask shape mismatch for {name}"
+                mask_cpu = mask.detach().to("cpu", dtype=torch.bool)
+
+            # Hash the raw bytes for exact equality (name+shape+mask contents)
+            h = hashlib.sha256()
+            h.update(name.encode("utf-8"))
+            h.update(str(tuple(shape)).encode("utf-8"))
+            h.update(mask_cpu.numpy().tobytes())
+            # take first 8 bytes as unsigned 64-bit int
+            h64 = int.from_bytes(h.digest()[:8], byteorder="big", signed=True)
+            checks.append(h64)
+
+        local_vec = torch.tensor(checks, dtype=torch.int64, device="cuda" if torch.cuda.is_available() else "cpu")
+
+        # Broadcast rank-0's vector as the reference
+        ref_vec = local_vec.clone()
+        dist.broadcast(ref_vec, src=0)
+
+        # Compare to reference and report any mismatches
+        mism = (local_vec != ref_vec)
+        num_mism = int(mism.sum().item())
+
+        # Aggregate across all ranks to see if any mismatches anywhere
+        total_mism = torch.tensor([num_mism], dtype=torch.int32, device=local_vec.device)
+        dist.all_reduce(total_mism, op=dist.ReduceOp.SUM)
+
+        if total_mism.item() != 0:
+            # Print which params differ on this rank (keep it concise)
+            bad_idxs = mism.nonzero(as_tuple=False).flatten().tolist()
+            bad_names = [names[i] for i in bad_idxs[:100]]  # truncate to first 100 for readability
+            print(f"[MaskCheck][rank {rank}] {num_mism} param masks differ from rank 0. e.g., {bad_names}")
+            # Optional: hard assert to fail fast
+            # raise RuntimeError(f"DDP mask mismatch on rank {rank}")
+        elif rank == 0:
+            print("[MaskCheck] All ranks have identical neuron masks ✔")
+
+
+@torch.no_grad()
     def _ddp_assert_neuron_masks_identical(self):
         """Check that self._fixed_neuron_masks are identical across ranks.
         Call only on a synchronized step (require_backward_grad_sync == True)."""
