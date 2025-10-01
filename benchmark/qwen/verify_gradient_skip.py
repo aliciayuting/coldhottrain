@@ -2,13 +2,15 @@ import os
 import sys
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 EPOCH_LENGTH = 407
 main_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-80p-1e-randommask-20250927-002901")
 checkpoint_dir = os.path.join(main_dir, "ckpt")
 gradient_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(main_dir, "grad_dump/step004500")
 masks_path = sys.argv[3] if len(sys.argv) > 3 else os.path.join(main_dir, "neuron_masks_0.pt")
+checkpoint_1 = sys.argv[4] if len(sys.argv) > 4 else 0
+checkpoint_2 = sys.argv[5] if len(sys.argv) > 5 else 0
 
 #TODO: open .pt file named neuron_masks.pt
 print(f"Loading masks from {masks_path}")
@@ -95,8 +97,8 @@ for k,example in masks.items():
 #load model from checkpoint
 #compare_1 = EPOCH_LENGTH*0
 #compare_1 = "Qwen/Qwen2.5-0.5B"
-# compare_1 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*27}")
-# compare_2 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*28}")
+compare_1 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*27}")
+compare_2 = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*28}")
 
 # model1 = AutoModelForCausalLM.from_pretrained(
 #     compare_1,
@@ -110,23 +112,36 @@ for k,example in masks.items():
 #     device_map="cpu",
 # )
 
+model1 = AutoModelForSequenceClassification.from_pretrained(
+    compare_1,
+    torch_dtype=torch.bfloat16,
+    device_map="cpu",
+    num_labels=2
+)
 
-# # Compare weights of model1 and model2
-# for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
-#     if name1 != name2:
-#         print(f"Layer names do not match: {name1} != {name2}")
-#         continue
-#     if param1.shape != param2.shape:
-#         print(f"Layer shapes do not match for {name1}: {param1.shape} != {param2.shape}")
-#         continue
-#     if name1 not in masks:
-#         print(f"Layer {name1} not found in masks")
-#         continue
-#     for row in range(len(param1)):
-#         if masks[name1][row]==True and not torch.equal(param1[row], param2[row]):
-#             # go through each element in the row and print the differing elements
-#             for col in range(len(param1[row])):
-#                 if param1[row][col] != param2[row][col]:
-#                     print(f"Layer {name1} has differing weights at row {row}, col {col}: {param1[row][col]} != {param2[row][col]}")
+model2 = AutoModelForSequenceClassification.from_pretrained(
+    compare_2,
+    torch_dtype=torch.bfloat16,
+    device_map="cpu",
+    num_labels=2
+)
+
+# Compare weights of model1 and model2
+for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
+    if name1 != name2:
+        print(f"Layer names do not match: {name1} != {name2}")
+        continue
+    if param1.shape != param2.shape:
+        print(f"Layer shapes do not match for {name1}: {param1.shape} != {param2.shape}")
+        continue
+    if name1 not in masks:
+        print(f"Layer {name1} not found in masks")
+        continue
+    for row in range(len(param1)):
+        if masks[name1][row]==True and not torch.equal(param1[row], param2[row]):
+            # go through each element in the row and print the differing elements
+            for col in range(len(param1[row])):
+                if param1[row][col] != param2[row][col]:
+                    print(f"Layer {name1} has differing weights at row {row}, col {col}: {param1[row][col]} != {param2[row][col]}")
 
 
