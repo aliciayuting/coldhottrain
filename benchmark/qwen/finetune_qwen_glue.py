@@ -32,7 +32,7 @@ NUM_EPOCHS=3
 # EVAL_LOSS_STEPS=200
 # NUM_EPOCHS=3
 
-RUN_NAME = "random-100p"
+RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 
@@ -43,7 +43,7 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 1.0
+RANDOM_HOT_K_PERCENT = 0.2
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
