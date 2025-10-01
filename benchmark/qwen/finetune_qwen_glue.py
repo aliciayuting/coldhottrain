@@ -19,19 +19,20 @@ logging.basicConfig(
 MODEL = "Qwen/Qwen2.5-0.5B"
 
 
-#DATASET = "sst2"
-#VALIDATION_SET = "validation"
-#NUM_LABELS = 2
-#EVAL_LOSS_STEPS=100
-
-DATASET = "mnli"
-VALIDATION_SET = "validation_matched"
-#VALIDATION_SET = "validation_mismatched"
-NUM_LABELS = 3
-EVAL_LOSS_STEPS=500
+DATASET = "sst2"
+VALIDATION_SET = "validation"
+NUM_LABELS = 2
+EVAL_LOSS_STEPS=50
 NUM_EPOCHS=3
 
-RUN_NAME = "random-50p"
+# DATASET = "mnli"
+# VALIDATION_SET = "validation_matched"
+# #VALIDATION_SET = "validation_mismatched"
+# NUM_LABELS = 3
+# EVAL_LOSS_STEPS=200
+# NUM_EPOCHS=3
+
+RUN_NAME = "sst2-random-50p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 
@@ -62,11 +63,11 @@ args = TrainingArguments(
     # fp16=True,
     bf16=True,
     logging_steps=100,
-    save_strategy="epoch",
+    save_strategy="steps",
     eval_strategy="steps",
     eval_steps=EVAL_LOSS_STEPS,
     weight_decay=0.01,
-    #save_steps=100,
+    save_steps=50,
     # save_total_limit=2,
     ddp_find_unused_parameters=False,
     # max_steps = 16,
