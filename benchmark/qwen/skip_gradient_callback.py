@@ -237,8 +237,10 @@ class SkipGradientCallback(TrainerCallback):
             optimizer = kwargs.get("optimizer", None)
             if optimizer is not None and type(optimizer) == MaskedAdamW:
                 optimizer.set_mask_dict(self.neuron_masks, strict=True)
+                logger.info("SkipGradientCallback: set new random masks in optimizer.")
             else:
                 logger.warning("SkipGradientCallback: optimizer is not MaskedAdamW; cannot set masks in optimizer.")
+                logger.warning(f"type(optimizer)={type(optimizer)}")
                 
                 
         self._apply_fixed_masks()
