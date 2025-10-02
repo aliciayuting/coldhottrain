@@ -24,7 +24,8 @@ logging.basicConfig(
         format="[%(levelname)s] %(message)s"
     )
 
-MODEL = "Qwen/Qwen2.5-0.5B"
+# MODEL = "Qwen/Qwen2.5-0.5B"
+MODEL = "Qwen/Qwen2.5-14B"
 
 
 DATASET = "sst2"
@@ -38,7 +39,7 @@ EVAL_LOSS_STEPS=5
 # NUM_LABELS = 3
 # EVAL_LOSS_STEPS=500
 
-NUM_EPOCHS=1
+NUM_EPOCHS=3
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -53,38 +54,7 @@ MODE="random"
 RANDOM_HOT_K_PERCENT = 0.2
 CHANGE_RANDOM_EVERY_ITERS = 100
 
-# output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
-# output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
-output_dir = f"/mnt/coldhot/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
 
-
-weight_out_dir = f"{output_dir}/weight_dump"
-# Training arguments
-args = TrainingArguments(
-    output_dir=f"{output_dir}/ckpt",
-    logging_dir=f"{output_dir}/logs",
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=8,
-    gradient_accumulation_steps=2,
-    # gradient_accumulation_steps=1,
-    # num_train_epochs=NUM_EPOCHS,
-    learning_rate=2e-5,
-    # fp16=True,
-    bf16=True,
-    logging_steps=2,
-    # save_strategy="epoch",
-    save_strategy="no",
-    # eval_strategy="steps",
-    # eval_steps=EVAL_LOSS_STEPS,
-    weight_decay=0.01,
-    #save_steps=100,
-    # save_total_limit=2,
-    ddp_find_unused_parameters=False,
-    max_steps = 10,
-    # logging_strategy="no",
-    # disable_tqdm=True,
-    report_to="none"
-)
 
 
 def safe_destroy():
@@ -151,6 +121,43 @@ if __name__ == "__main__":
 
 
 
+    output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}"
+    os.makedirs(output_dir, exist_ok=True)
+    # print(f"Output dir: {output_dir}")
+    # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
+    # output_dir = f"/mnt/coldhot/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
+
+
+    weight_out_dir = f"{output_dir}/weight_dump"
+    # Training arguments
+    args = TrainingArguments(
+        output_dir=f"{output_dir}/ckpt",
+        logging_dir=f"{output_dir}/logs",
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
+        gradient_accumulation_steps=2,
+        # gradient_accumulation_steps=1,
+        num_train_epochs=NUM_EPOCHS,
+        learning_rate=2e-5,
+        # fp16=True,
+        bf16=True,
+        logging_steps=100,
+        save_strategy="epoch",
+        # save_strategy="no",
+        # eval_strategy="steps",
+        # eval_steps=EVAL_LOSS_STEPS,
+        weight_decay=0.01,
+        #save_steps=100,
+        # save_total_limit=2,
+        ddp_find_unused_parameters=False,
+        max_steps = 10,
+        # logging_strategy="no",
+        # disable_tqdm=True,
+        report_to="none"
+    )
+
+
+
     # Load tokenizer & model
     tok = AutoTokenizer.from_pretrained(MODEL, use_fast=False)
     # If tokenizer has no pad token (common for causal LMs), set it:
@@ -166,13 +173,19 @@ if __name__ == "__main__":
     model.config.pad_token_id = tok.pad_token_id
 
 
+    # print out if rank 0
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        for name, param in model.named_parameters():
+            print(name, param.shape, param.numel())
+
+
     if skip_ratio > 0.0:
         print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
 
         layers = get_decoder_layers(model)   # <-- the fix
         layer_idx = 23
         for i, layer in enumerate(layers):
-
+                
             mapping = {
                 "self_attn.q_proj": layer.self_attn.q_proj,
                 "self_attn.k_proj": layer.self_attn.k_proj,
@@ -258,8 +271,8 @@ if __name__ == "__main__":
 
 
 
-    num_gpus = torch.cuda.device_count()
-    # num_gpus = 1
+    # num_gpus = torch.cuda.device_count()
+    num_gpus = 1
     num_samples = len(tokenized_ds["train"])
     global_batch = args.per_device_train_batch_size * args.gradient_accumulation_steps * max(1, num_gpus)
     iters_per_epoch = (num_samples + global_batch - 1) // global_batch
@@ -318,11 +331,17 @@ if __name__ == "__main__":
         print("Average iteration time (s):", avg_time)
 
         # wrote to a csv file
-        with open(f"iteration_times.csv", "a") as f:
+        with open(f"./output/iteration_times/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}.csv", "a") as f:
             f.write(f"{skip_ratio},{avg_time}\n")
 
 
-
-    # trainer.save_model(f"{output_dir}/final_only_model")
+    # # Save final model (only on rank 0)
+    # if not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+    #     print(f"Saving final model to {output_dir}/final_only_model")
+    #     # trainer.save_model(f"{output_dir}/final_only_model")
+    #     model_output_path = f"{output_dir}/final_only_model"
+    #     # make dir if not exist
+    #     os.makedirs(model_output_path, exist_ok=True)
+    #     model.save_pretrained(model_output_path)
 
     safe_destroy()
