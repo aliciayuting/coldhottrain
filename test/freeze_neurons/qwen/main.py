@@ -4,7 +4,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPa
 import torch
 # from custom_adam import MaskedAdamW
 from gradient_callback import *
-# from probe import *
+from probe import *
+from probe2 import *
 import hashlib
 import time
 import torch.distributed as dist
@@ -24,14 +25,14 @@ logging.basicConfig(
         format="[%(levelname)s] %(message)s"
     )
 
-# MODEL = "Qwen/Qwen2.5-0.5B"
-MODEL = "Qwen/Qwen2.5-14B"
+MODEL = "Qwen/Qwen2.5-0.5B"
+#MODEL = "Qwen/Qwen2.5-14B"
 
 
 DATASET = "sst2"
 VALIDATION_SET = "validation"
 NUM_LABELS = 2
-EVAL_LOSS_STEPS=5
+EVAL_LOSS_STEPS=50
 
 # DATASET = "mnli"
 # VALIDATION_SET = "validation_matched"
@@ -39,7 +40,7 @@ EVAL_LOSS_STEPS=5
 # NUM_LABELS = 3
 # EVAL_LOSS_STEPS=500
 
-NUM_EPOCHS=3
+NUM_EPOCHS=1
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -121,7 +122,7 @@ if __name__ == "__main__":
 
 
 
-    output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}"
+    output_dir = f"/pscratch/sd/l/lsx/jamal-runs-sx/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}"
     os.makedirs(output_dir, exist_ok=True)
     # print(f"Output dir: {output_dir}")
     # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -138,19 +139,20 @@ if __name__ == "__main__":
         gradient_accumulation_steps=2,
         # gradient_accumulation_steps=1,
         num_train_epochs=NUM_EPOCHS,
+        gradient_checkpointing=True,
         learning_rate=2e-5,
         # fp16=True,
         bf16=True,
-        logging_steps=100,
+        logging_steps=10,
         save_strategy="epoch",
         # save_strategy="no",
-        # eval_strategy="steps",
-        # eval_steps=EVAL_LOSS_STEPS,
+        eval_strategy="steps",
+        eval_steps=EVAL_LOSS_STEPS,
         weight_decay=0.01,
         #save_steps=100,
         # save_total_limit=2,
         ddp_find_unused_parameters=False,
-        max_steps = 10,
+        #max_steps = 10,
         # logging_strategy="no",
         # disable_tqdm=True,
         report_to="none"
@@ -193,7 +195,7 @@ if __name__ == "__main__":
                 "self_attn.o_proj": layer.self_attn.o_proj,
                 "mlp.up_proj":      layer.mlp.up_proj,
                 "mlp.down_proj":    layer.mlp.down_proj,
-                # "mlp.gate_proj": layer.mlp.gate_proj,
+                "mlp.gate_proj": layer.mlp.gate_proj,
             }
             
 
@@ -310,14 +312,29 @@ if __name__ == "__main__":
 
     # trainer.add_callback(dump_cb)
 
-    # probe_cb = Probe()
-    # trainer.add_callback(probe_cb)
+    probe_cb = Probe()
+    ram_cb = VramBreakdownCallback()
 
+    #trainer.add_callback(probe_cb)
+    trainer.add_callback(ram_cb)
+    
 
+    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+
+    def log_memory_stats():
+        """Log current GPU memory statistics"""
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**2
+        reserved = torch.cuda.memory_reserved() / 1024**2
+        
+        logging.info(f"GPU Memory - Allocated: {allocated:.2f} MB, Max Allocated: {max_allocated:.2f} MB, Reserved: {reserved:.2f} MB")
+
+    log_memory_stats()
 
     # Start training
     trainer.train()
-
+    
+    log_memory_stats()
 
     # check if this process is rank 0 before accessing time_callback.iter_times
     if benchmark_time and (not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
