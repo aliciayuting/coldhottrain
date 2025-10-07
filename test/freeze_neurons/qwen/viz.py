@@ -142,10 +142,28 @@ def main():
 def print_module_tree():
     from transformers import AutoModelForCausalLM
     import torch
+    from helper import make_hot_idx, replace_embedding_with_colwise, replace_linear_with_colwise, get_decoder_layers
 
     model = AutoModelForCausalLM.from_pretrained(MODEL_ID, trust_remote_code=True, torch_dtype=torch.float16, device_map="cpu")
+    embedding = model.model.embed_tokens
+    hot_idx = make_hot_idx(embedding.num_embeddings, frac=1-0.8, device=embedding.weight.device)
+    model.model.embed_tokens = replace_embedding_with_colwise(embedding, hot_idx)
+    e = model.model.embed_tokens
+    print(e.named_children(), e.named_buffers(), e.named_parameters(), e.named_modules())
+    for name, child in e.named_children():
+        print(f"Child module: {name}")
+
+    for name, param in e.named_parameters():
+        print(f"Param: {name}, shape: {param.shape}")
+    
+    for name, buf in e.named_buffers():
+        print(f"Buffer: {name}, shape: {buf.shape}")
+    
+    for name, mod in e.named_modules():
+        print(f"Module: {name}, type: {type(mod)}")
+
     def walk(module, prefix=""):
-        print(prefix + module.__class__.__name__)
+        print(prefix + module.__class__.__name__, isinstance(module, torch.nn.Embedding))
         for name, child in module.named_children():
             walk(child, prefix + f"{name}.")
     walk(model)

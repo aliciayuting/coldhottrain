@@ -184,10 +184,13 @@ if __name__ == "__main__":
     if skip_ratio > 0.0:
         print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
 
+        embedding: nn.Embedding = model.model.embed_tokens
+        hot_idx = make_hot_idx(embedding.num_embeddings, frac=1-skip_ratio, device=embedding.weight.device)
+        model.model.embed_tokens = replace_embedding_with_colwise(embedding, hot_idx)
+
         layers = get_decoder_layers(model)   # <-- the fix
         layer_idx = 23
         for i, layer in enumerate(layers):
-                
             mapping = {
                 "self_attn.q_proj": layer.self_attn.q_proj,
                 "self_attn.k_proj": layer.self_attn.k_proj,

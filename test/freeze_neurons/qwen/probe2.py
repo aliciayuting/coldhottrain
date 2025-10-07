@@ -113,6 +113,7 @@ class VramBreakdownCallback(TrainerCallback):
         torch.cuda.synchronize()
         now_alloc = torch.cuda.memory_allocated()
         peak_alloc = torch.cuda.max_memory_allocated()
+        reserved_alloc = torch.cuda.memory_reserved()
 
         p_bytes = _model_param_bytes(model) if model is not None else 0
         b_bytes = _model_buffer_bytes(model) if model is not None else 0
@@ -132,6 +133,7 @@ class VramBreakdownCallback(TrainerCallback):
             "mem/activations_mb~": _fmt_mb(act_bytes_est),
             "mem/now_allocated_mb": _fmt_mb(now_alloc),
             "mem/peak_allocated_mb": _fmt_mb(peak_alloc),
+            "mem/reserved_mb": _fmt_mb(reserved_alloc),
         }
 
         # Send through Trainer and also print
@@ -147,4 +149,5 @@ class VramBreakdownCallback(TrainerCallback):
               f"opt={log_record['mem/optimizer_mb']}MB, "
               f"acts~={log_record['mem/activations_mb~']}MB, "
               f"now={log_record['mem/now_allocated_mb']}MB, "
-              f"peak={log_record['mem/peak_allocated_mb']}MB")
+              f"peak={log_record['mem/peak_allocated_mb']}MB,"
+              f"reserved={log_record['mem/reserved_mb']}MB")

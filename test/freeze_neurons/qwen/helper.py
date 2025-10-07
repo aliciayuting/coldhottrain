@@ -3,7 +3,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPa
 # import torch.nn
 import torch
 import torch.nn as nn
-from module import LinearColWise
+from module import EmbeddingColWise, LinearColWise
+
 
 def get_decoder_layers(m: nn.Module):
     """
@@ -36,6 +37,13 @@ def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> Linear
     assert isinstance(mod, nn.Linear)
     hot_idx = hot_idx.to(mod.weight.device)
     wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx)
+    wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
+    return wrapped
+
+def replace_embedding_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> EmbeddingColWise:
+    assert isinstance(mod, nn.Embedding)
+    hot_idx = hot_idx.to(mod.weight.device)
+    wrapped = EmbeddingColWise.from_embedding(mod, hot_idx=hot_idx)
     wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
     return wrapped
 

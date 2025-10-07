@@ -246,8 +246,9 @@ class LinearColWise(nn.Module):
         y = x.new_empty(B, T, self.out_features)
 
         # Compute cold and hot paths (F.linear works on the last dim)
-        with torch.no_grad():
-            out_cold = F.linear(x, self.W_cold, self.b_cold if self.has_bias else None)   # [B, T, cold_dim]
+        #TODO: see if turning this on/off for out_cold has an effect on memory. We want the gradients to flow through though right?
+        #with torch.no_grad():
+        out_cold = F.linear(x, self.W_cold, self.b_cold if self.has_bias else None)   # [B, T, cold_dim]
         out_hot = F.linear(x, self.W_hot, self.b_hot if self.has_bias else None)          # [B, T, hot_dim]
 
         # Scatter into the last (feature) dimension
@@ -268,7 +269,121 @@ class LinearColWise(nn.Module):
             init_bias=None if base.bias is None else base.bias.data.clone(),
         )
         return mod
-    
+
+class EmbeddingColWise(nn.Module):
+    """
+    Split/freeze rows of an Embedding(num_embeddings, embedding_dim).
+    - hot_idx: token IDs (rows) that remain trainable; the rest are frozen.
+    - padding_idx: preserved like nn.Embedding (output zeros; no grads flow).
+    """
+    def __init__(self,
+                 num_embeddings: int,
+                 embedding_dim: int,
+                 hot_idx: torch.Tensor,
+                 padding_idx: int | None = None,
+                 init_weight: torch.Tensor | None = None,
+                 max_norm: float | None = None,
+                 norm_type: float = 2.0,
+                 scale_grad_by_freq: bool = False,
+                 sparse: bool = False):
+        super().__init__()
+        assert hot_idx.ndim == 1
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.padding_idx = padding_idx
+
+        self.max_norm = max_norm
+        self.norm_type = norm_type
+        self.scale_grad_by_freq = scale_grad_by_freq
+        self.sparse = sparse
+
+        # Normalize and derive cold indices
+        hot_idx = hot_idx.to(torch.long).unique(sorted=True)
+        all_idx = torch.arange(num_embeddings, dtype=torch.long, device=hot_idx.device)
+        cold_idx = torch.tensor(sorted(set(all_idx.tolist()) - set(hot_idx.tolist())),
+                                dtype=torch.long, device=hot_idx.device)
+
+        self.register_buffer("hot_idx",  hot_idx,  persistent=True)
+        self.register_buffer("cold_idx", cold_idx, persistent=True)
+
+        # Initialize from full table or random
+        if init_weight is None:
+            bound = 1.0 / embedding_dim**0.5
+            full_W = torch.empty(num_embeddings, embedding_dim, device=hot_idx.device).uniform_(-bound, bound)
+            if padding_idx is not None:
+                full_W[padding_idx].zero_()
+        else:
+            assert init_weight.shape == (num_embeddings, embedding_dim)
+            full_W = init_weight.detach()
+
+        # Trainable hot, frozen cold
+        self.W_hot  = nn.Parameter(full_W[hot_idx])
+        self.register_buffer("W_cold", full_W[cold_idx], persistent=True)
+
+        # Precompute ID→position remaps (in compact hot/cold tables)
+        # -1 means "not present" in that table
+        hot_pos  = torch.full((num_embeddings,), -1, dtype=torch.long, device=hot_idx.device)
+        cold_pos = torch.full((num_embeddings,), -1, dtype=torch.long, device=hot_idx.device)
+        hot_pos[hot_idx]   = torch.arange(hot_idx.numel(),  device=hot_idx.device)
+        cold_pos[cold_idx] = torch.arange(cold_idx.numel(), device=hot_idx.device)
+
+        self.register_buffer("hot_pos",  hot_pos,  persistent=True)
+        self.register_buffer("cold_pos", cold_pos, persistent=True)
+        self.register_buffer("is_hot_row", hot_pos.ne(-1), persistent=True)
+
+    @torch.no_grad()
+    def set_cold_from_full(self, full_weight: torch.Tensor):
+        """Optional: refresh frozen rows from a full table."""
+        self.W_cold.copy_(full_weight[self.cold_idx])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, T] token IDs in [0, num_embeddings)
+        # Map IDs to compact positions
+        pos_hot  = self.hot_pos[x]        # [-1 or 0..|hot|-1]
+        pos_cold = self.cold_pos[x]       # [-1 or 0..|cold|-1]
+        mask_hot = self.is_hot_row[x]     # True where token is hot
+
+        # Do the two compact lookups; clamp -1→0 (dummy row) then mask-select later
+        #emb_hot  = F.embedding(pos_hot.clamp_min(0),  self.W_hot)   # [B, T, D]
+        #emb_cold = F.embedding(pos_cold.clamp_min(0), self.W_cold)  # [B, T, D]
+        emb_hot = F.embedding(
+            pos_hot.clamp_min(0), self.W_hot,
+            padding_idx=None,
+            max_norm=self.max_norm, norm_type=self.norm_type,
+            scale_grad_by_freq=self.scale_grad_by_freq, sparse=self.sparse
+        )
+        emb_cold = F.embedding(
+            pos_cold.clamp_min(0), self.W_cold,
+            padding_idx=None,
+            max_norm=self.max_norm, norm_type=self.norm_type,
+            scale_grad_by_freq=self.scale_grad_by_freq, sparse=self.sparse
+        )
+        y = torch.where(mask_hot.unsqueeze(-1), emb_hot, emb_cold)
+
+        # Preserve padding semantics
+        if self.padding_idx is not None:
+            pad_mask = x.eq(self.padding_idx)
+            if pad_mask.any():
+                y = y.masked_fill(pad_mask.unsqueeze(-1), 0)
+
+        return y
+
+    @staticmethod
+    def from_embedding(base: nn.Embedding, hot_idx: torch.Tensor) -> "EmbeddingColWise":
+        mod =  EmbeddingColWise(
+            num_embeddings=base.num_embeddings,
+            embedding_dim=base.embedding_dim,
+            hot_idx=hot_idx,
+            padding_idx=base.padding_idx,
+            init_weight=base.weight.detach().clone(),
+            max_norm=getattr(base, "max_norm", None),
+            norm_type=getattr(base, "norm_type", 2.0),
+            scale_grad_by_freq=getattr(base, "scale_grad_by_freq", False),
+            sparse=getattr(base, "sparse", False),
+        )
+        return mod
+
+
 def print_params(model):
     print("Trainable parameters:")
     for name, param in model.named_parameters():
