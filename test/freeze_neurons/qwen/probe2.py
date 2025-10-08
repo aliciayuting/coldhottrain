@@ -82,7 +82,7 @@ class VramBreakdownCallback(TrainerCallback):
         if torch.cuda.is_available():
             self._pre_fwd_alloc = None
             self._post_fwd_alloc = None
-            torch.cuda.reset_peak_memory_stats()
+            #torch.cuda.reset_peak_memory_stats()
         self._microstep_idx = 0
 
     def on_step_end(self, args, state, control, **kwargs):

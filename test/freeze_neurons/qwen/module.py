@@ -196,8 +196,9 @@ class EfficientFullLinear(torch.autograd.Function):
         b_hot = ctx.b_hot
         
         # Recreate W_full for input gradient computation
-        W_cat = torch.cat([W_cold, W_hot], dim=0)
-        W_full = W_cat.index_select(0, reorder_idx)
+        with torch.no_grad():
+            W_cat = torch.cat([W_cold, W_hot], dim=0)
+            W_full = W_cat.index_select(0, reorder_idx)
         
         # Compute input gradient
         grad_x = None
@@ -215,14 +216,19 @@ class EfficientFullLinear(torch.autograd.Function):
             grad_W_full = grad_output_flat.t().mm(x_flat)
             
             # Inverse permutation to get grad_W_cat
-            inverse_idx = torch.empty_like(reorder_idx)
-            inverse_idx[reorder_idx] = torch.arange(len(reorder_idx), device=reorder_idx.device)
-            grad_W_cat = grad_W_full.index_select(0, inverse_idx)
+            with torch.no_grad():
+                inverse_idx = torch.empty_like(reorder_idx)
+                inverse_idx[reorder_idx] = torch.arange(len(reorder_idx), device=reorder_idx.device)
+
+            grad_W_cat = grad_W_full.index_select(0, inverse_idx).detach()
             
             # Split back to cold/hot
             cold_dim = W_cold.size(0)
-            grad_W_cold = grad_W_cat[:cold_dim] if ctx.needs_input_grad[1] else None
-            grad_W_hot = grad_W_cat[cold_dim:] if ctx.needs_input_grad[2] else None
+            grad_W_cold = grad_W_cat[:cold_dim].clone() if ctx.needs_input_grad[1] else None
+            grad_W_hot = grad_W_cat[cold_dim:].clone() if ctx.needs_input_grad[2] else None
+            
+            # Explicitly delete intermediates
+            del grad_W_full, grad_W_cat, inverse_idx
         
         # Compute bias gradients
         grad_b_cold = grad_b_hot = None
@@ -232,15 +238,18 @@ class EfficientFullLinear(torch.autograd.Function):
                 grad_b_full = grad_output.sum(dim=list(range(grad_output.ndim - 1)))
                 
                 # Inverse permute
-                inverse_idx = torch.empty_like(reorder_idx)
-                inverse_idx[reorder_idx] = torch.arange(len(reorder_idx), device=reorder_idx.device)
-                grad_b_cat = grad_b_full.index_select(0, inverse_idx)
+                with torch.no_grad():
+                    inverse_idx = torch.empty_like(reorder_idx)
+                    inverse_idx[reorder_idx] = torch.arange(len(reorder_idx), device=reorder_idx.device)
+
+                grad_b_cat = grad_b_full.index_select(0, inverse_idx).detach()
                 
                 # Split
                 cold_dim = b_cold.size(0)
-                grad_b_cold = grad_b_cat[:cold_dim] if ctx.needs_input_grad[3] else None
-                grad_b_hot = grad_b_cat[cold_dim:] if ctx.needs_input_grad[4] else None
-        
+                grad_b_cold = grad_b_cat[:cold_dim].clone() if ctx.needs_input_grad[3] else None
+                grad_b_hot = grad_b_cat[cold_dim:].clone() if ctx.needs_input_grad[4] else None
+                del grad_b_full, grad_b_cat, inverse_idx
+        del W_cat, W_full
         return grad_x, grad_W_cold, grad_W_hot, grad_b_cold, grad_b_hot, None
 
 class Efficient2Linear(torch.autograd.Function):
@@ -317,8 +326,10 @@ class LinearColWise(nn.Module):
                  hot_idx: torch.Tensor, bias: bool = False,
                  init_weight: torch.Tensor | None = None,
                  init_bias: torch.Tensor | None = None,
-                 #mode: str = "1linear_efficient"):
-                 mode: str = "2linear_efficient"):
+                 mode: str = "1linear_efficient"):
+                 #mode: str = "2linear_efficient"):
+                 #mode: str = "1linear"):
+                 #mode: str = "2linear"):
         super().__init__()
         assert hot_idx.ndim == 1
         self.in_features = in_features

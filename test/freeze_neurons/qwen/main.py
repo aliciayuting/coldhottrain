@@ -25,6 +25,8 @@ logging.basicConfig(
         format="[%(levelname)s] %(message)s"
     )
 
+torch.manual_seed(42)
+
 SCRATCH = "/mydata"
 MODEL = "Qwen/Qwen2.5-0.5B"
 #MODEL = "Qwen/Qwen2.5-1.5B"
