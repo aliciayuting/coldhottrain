@@ -165,6 +165,147 @@ def random_unique_columns(ncol: int, m: int, device=None):
         raise ValueError(f"m ({m}) must be <= ncol ({ncol})")
     return torch.randperm(ncol, device=device, dtype=torch.long)[:m]
 
+
+
+
+class EfficientFullLinear(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, W_cold, W_hot, b_cold, b_hot, reorder_idx):
+        # Save only the original components (not W_cat or W_full!)
+        ctx.save_for_backward(x, W_cold, W_hot, reorder_idx)
+        ctx.b_cold = b_cold  # Store as context (might be None)
+        ctx.b_hot = b_hot
+        
+        # Create W_full (not saved for backward)
+        W_cat = torch.cat([W_cold, W_hot], dim=0)
+        W_full = W_cat.index_select(0, reorder_idx)
+        
+        # Create b_full if needed (not saved)
+        b_full = None
+        if b_cold is not None:
+            b_cat = torch.cat([b_cold, b_hot], dim=0)
+            b_full = b_cat.index_select(0, reorder_idx)
+        
+        # Compute output
+        return F.linear(x, W_full, b_full)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, W_cold, W_hot, reorder_idx = ctx.saved_tensors
+        b_cold = ctx.b_cold
+        b_hot = ctx.b_hot
+        
+        # Recreate W_full for input gradient computation
+        W_cat = torch.cat([W_cold, W_hot], dim=0)
+        W_full = W_cat.index_select(0, reorder_idx)
+        
+        # Compute input gradient
+        grad_x = None
+        if ctx.needs_input_grad[0]:
+            grad_x = F.linear(grad_output, W_full.t())
+        
+        # Compute weight gradients
+        grad_W_cold = grad_W_hot = None
+        if ctx.needs_input_grad[1] or ctx.needs_input_grad[2]:
+            # Flatten x for matmul: [B, T, in] -> [B*T, in]
+            x_flat = x.reshape(-1, x.size(-1))
+            grad_output_flat = grad_output.reshape(-1, grad_output.size(-1))
+            
+            # grad w.r.t W_full: [out, in]
+            grad_W_full = grad_output_flat.t().mm(x_flat)
+            
+            # Inverse permutation to get grad_W_cat
+            inverse_idx = torch.empty_like(reorder_idx)
+            inverse_idx[reorder_idx] = torch.arange(len(reorder_idx), device=reorder_idx.device)
+            grad_W_cat = grad_W_full.index_select(0, inverse_idx)
+            
+            # Split back to cold/hot
+            cold_dim = W_cold.size(0)
+            grad_W_cold = grad_W_cat[:cold_dim] if ctx.needs_input_grad[1] else None
+            grad_W_hot = grad_W_cat[cold_dim:] if ctx.needs_input_grad[2] else None
+        
+        # Compute bias gradients
+        grad_b_cold = grad_b_hot = None
+        if b_cold is not None:
+            if ctx.needs_input_grad[3] or ctx.needs_input_grad[4]:
+                # Sum over all dims except last (features)
+                grad_b_full = grad_output.sum(dim=list(range(grad_output.ndim - 1)))
+                
+                # Inverse permute
+                inverse_idx = torch.empty_like(reorder_idx)
+                inverse_idx[reorder_idx] = torch.arange(len(reorder_idx), device=reorder_idx.device)
+                grad_b_cat = grad_b_full.index_select(0, inverse_idx)
+                
+                # Split
+                cold_dim = b_cold.size(0)
+                grad_b_cold = grad_b_cat[:cold_dim] if ctx.needs_input_grad[3] else None
+                grad_b_hot = grad_b_cat[cold_dim:] if ctx.needs_input_grad[4] else None
+        
+        return grad_x, grad_W_cold, grad_W_hot, grad_b_cold, grad_b_hot, None
+
+class Efficient2Linear(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, W_cold, W_hot, b_cold, b_hot, cold_idx, hot_idx, out_features):
+        # Save inputs for backward (but NOT the intermediate activations!)
+        ctx.save_for_backward(x, W_cold, W_hot, cold_idx, hot_idx)
+        ctx.b_cold = b_cold
+        ctx.b_hot = b_hot
+        ctx.out_features = out_features
+        
+        # Compute outputs (not saved)
+        out_cold = F.linear(x, W_cold, b_cold)  # [B, T, cold_dim]
+        out_hot = F.linear(x, W_hot, b_hot)     # [B, T, hot_dim]
+        
+        # Assemble output
+        y = x.new_empty(*x.shape[:-1], out_features)
+        y.index_copy_(-1, cold_idx, out_cold)
+        y.index_copy_(-1, hot_idx, out_hot)
+        
+        # Only return y, intermediates are freed!
+        return y
+    
+    @staticmethod  
+    def backward(ctx, grad_output):
+        x, W_cold, W_hot, cold_idx, hot_idx = ctx.saved_tensors
+        b_cold = ctx.b_cold
+        b_hot = ctx.b_hot
+        
+        # Extract gradients for cold and hot paths directly from grad_output
+        grad_out_cold = grad_output.index_select(-1, cold_idx)  # [B, T, cold_dim]
+        grad_out_hot = grad_output.index_select(-1, hot_idx)    # [B, T, hot_dim]
+        
+        # Input gradient
+        grad_x = None
+        if ctx.needs_input_grad[0]:
+            # Compute grad_x by applying transposed weights
+            grad_x_cold = F.linear(grad_out_cold, W_cold.t())
+            grad_x_hot = F.linear(grad_out_hot, W_hot.t())
+            grad_x = grad_x_cold + grad_x_hot
+        
+        # Weight gradients
+        grad_W_cold = grad_W_hot = None
+        if ctx.needs_input_grad[1] or ctx.needs_input_grad[2]:
+            # Flatten for matmul
+            x_flat = x.reshape(-1, x.size(-1))  # [B*T, in]
+            grad_out_cold_flat = grad_out_cold.reshape(-1, grad_out_cold.size(-1))  # [B*T, cold_dim]
+            grad_out_hot_flat = grad_out_hot.reshape(-1, grad_out_hot.size(-1))     # [B*T, hot_dim]
+            
+            if ctx.needs_input_grad[1]:
+                grad_W_cold = grad_out_cold_flat.t().mm(x_flat)  # [cold_dim, in]
+            if ctx.needs_input_grad[2]:
+                grad_W_hot = grad_out_hot_flat.t().mm(x_flat)    # [hot_dim, in]
+        
+        # Bias gradients  
+        grad_b_cold = grad_b_hot = None
+        if b_cold is not None:
+            if ctx.needs_input_grad[3]:
+                grad_b_cold = grad_out_cold.sum(dim=list(range(grad_out_cold.ndim - 1)))
+            if ctx.needs_input_grad[4]:
+                grad_b_hot = grad_out_hot.sum(dim=list(range(grad_out_hot.ndim - 1)))
+        
+        return grad_x, grad_W_cold, grad_W_hot, grad_b_cold, grad_b_hot, None, None, None
+
+
 class LinearColWise(nn.Module):
     """
     Freeze whole output columns of a Linear(in_features -> out_features).
@@ -175,11 +316,14 @@ class LinearColWise(nn.Module):
     def __init__(self, in_features: int, out_features: int,
                  hot_idx: torch.Tensor, bias: bool = False,
                  init_weight: torch.Tensor | None = None,
-                 init_bias: torch.Tensor | None = None):
+                 init_bias: torch.Tensor | None = None,
+                 #mode: str = "1linear_efficient"):
+                 mode: str = "2linear_efficient"):
         super().__init__()
         assert hot_idx.ndim == 1
         self.in_features = in_features
         self.out_features = out_features
+        self.mode = mode
 
         # Normalize and derive cold indices
         hot_idx = hot_idx.to(torch.long).unique(sorted=True)
@@ -189,6 +333,12 @@ class LinearColWise(nn.Module):
 
         self.register_buffer("hot_idx", hot_idx, persistent=True)
         self.register_buffer("cold_idx", cold_idx, persistent=True)
+        
+        #TODO: delete if unneccessary
+        reorder_idx = torch.empty(out_features, dtype=torch.long, device=hot_idx.device)
+        reorder_idx[cold_idx] = torch.arange(len(cold_idx), device=hot_idx.device)
+        reorder_idx[hot_idx]  = torch.arange(len(hot_idx),  device=hot_idx.device) + len(cold_idx)
+        self.register_buffer("reorder_idx", reorder_idx, persistent=True)
 
         # Shapes for F.linear: weight is [out_features, in_features]
         if init_weight is None:
@@ -226,6 +376,7 @@ class LinearColWise(nn.Module):
             self.register_buffer("b_cold", None, persistent=False)
             self.b_hot = None
 
+        #TODO: purpose of these?
         self.s0 = torch.cuda.current_stream("cuda")
         self.s_cold = torch.cuda.Stream(device="cuda")
         self.s_hot  = torch.cuda.Stream(device="cuda")
@@ -238,6 +389,40 @@ class LinearColWise(nn.Module):
             self.b_cold.copy_(full_bias[self.cold_idx])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.mode == "1linear":
+            return self.forward_1linear(x)
+        elif self.mode == "1linear_efficient":
+            return self.forward_1linear_efficient(x)
+        elif self.mode == "2linear":
+            return self.forward_2linear(x)
+        elif self.mode == "2linear_efficient":
+            return self.forward_2linear_efficient(x)
+        else:
+            raise ValueError(f"Unknown mode {self.mode}")
+        
+    def forward_1linear(self, x: torch.Tensor) -> torch.Tensor:
+        # Assemble full weight/bias in *concatenated* order then permute to full layout.
+        # This preserves grads to W_hot only; W_cold stays a buffer (no optimizer state).
+        W_cat = torch.cat([self.W_cold, self.W_hot], dim=0)            # [cold+hot, in]
+        W_full = W_cat.index_select(0, self.reorder_idx)               # [out, in]
+
+        if self.has_bias:
+            b_cat = torch.cat([self.b_cold, self.b_hot], dim=0)        # [cold+hot]
+            b_full = b_cat.index_select(0, self.reorder_idx)           # [out]
+        else:
+            b_full = None
+
+        return F.linear(x, W_full, b_full)
+    
+    def forward_1linear_efficient(self, x: torch.Tensor) -> torch.Tensor:
+        # Memory-efficient version using custom autograd
+        return EfficientFullLinear.apply(
+            x, self.W_cold, self.W_hot, 
+            self.b_cold, self.b_hot,
+            self.reorder_idx
+        )
+    
+    def forward_2linear(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, T, in_features]
         B, T, _ = x.shape
         device = x.device
@@ -255,7 +440,28 @@ class LinearColWise(nn.Module):
         # NOTE: use dim=2 because features are at the last axis
         y.index_copy_(2, self.cold_idx, out_cold)
         y.index_copy_(2, self.hot_idx,  out_hot)
+
+
+        # # ---- cold half ----
+        # out_cold = F.linear(x, self.W_cold, self.b_cold if self.has_bias else None)
+        # y.index_copy_(2, self.cold_idx, out_cold)
+        # del out_cold                      # let it go out of scope ASAP
+
+        # # ---- hot half ----
+        # out_hot = F.linear(x, self.W_hot, self.b_hot if self.has_bias else None)
+        # y.index_copy_(2, self.hot_idx, out_hot)
+        # del out_hot
+
         return y
+    
+    def forward_2linear_efficient(self, x: torch.Tensor) -> torch.Tensor:
+        # Memory-efficient 2linear using custom autograd
+        return Efficient2Linear.apply(
+            x, self.W_cold, self.W_hot,
+            self.b_cold, self.b_hot,
+            self.cold_idx, self.hot_idx,
+            self.out_features
+        )
 
     @staticmethod
     def from_linear(base: nn.Linear, hot_idx: torch.Tensor) -> "LinearColWise":
@@ -285,7 +491,8 @@ class EmbeddingColWise(nn.Module):
                  max_norm: float | None = None,
                  norm_type: float = 2.0,
                  scale_grad_by_freq: bool = False,
-                 sparse: bool = False):
+                 sparse: bool = False,
+                 mode: str = "2linear"):
         super().__init__()
         assert hot_idx.ndim == 1
         self.num_embeddings = num_embeddings

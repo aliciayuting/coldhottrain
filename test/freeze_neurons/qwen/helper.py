@@ -28,6 +28,9 @@ def make_hot_idx(out_features: int, frac: float | None = None, idx: torch.Tensor
         return hot
     assert frac is not None and 0.0 <= frac <= 1.0
     k = max(0, min(out_features, int(round(frac * out_features))))
+    #TODO: remove this later
+    if k == out_features:
+        k = out_features - 1
     if k == 0:
         return torch.zeros(0, dtype=torch.long, device=device)
     perm = torch.randperm(out_features, device=device)

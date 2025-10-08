@@ -25,8 +25,9 @@ logging.basicConfig(
         format="[%(levelname)s] %(message)s"
     )
 
+SCRATCH = "/mydata"
 MODEL = "Qwen/Qwen2.5-0.5B"
-#MODEL = "Qwen/Qwen2.5-14B"
+#MODEL = "Qwen/Qwen2.5-1.5B"
 
 
 DATASET = "sst2"
@@ -122,7 +123,7 @@ if __name__ == "__main__":
 
 
 
-    output_dir = f"/pscratch/sd/l/lsx/jamal-runs-sx/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}"
+    output_dir = os.path.join(SCRATCH, f"jamal-runs-sx/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}")
     os.makedirs(output_dir, exist_ok=True)
     # print(f"Output dir: {output_dir}")
     # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -137,7 +138,7 @@ if __name__ == "__main__":
         per_device_train_batch_size=16,
         per_device_eval_batch_size=16,
         gradient_accumulation_steps=2,
-        # gradient_accumulation_steps=1,
+        #gradient_accumulation_steps=1,
         num_train_epochs=NUM_EPOCHS,
         gradient_checkpointing=True,
         learning_rate=2e-5,
@@ -178,7 +179,8 @@ if __name__ == "__main__":
     # print out if rank 0
     if not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
         for name, param in model.named_parameters():
-            print(name, param.shape, param.numel())
+            #print(name, param.shape, param.numel())
+            pass
 
 
     if skip_ratio > 0.0:

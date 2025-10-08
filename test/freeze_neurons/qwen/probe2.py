@@ -85,20 +85,28 @@ class VramBreakdownCallback(TrainerCallback):
             torch.cuda.reset_peak_memory_stats()
         self._microstep_idx = 0
 
-    def on_substep_end(self, args, state, control, **kwargs):
+    def on_step_end(self, args, state, control, **kwargs):
         """
-        Called after backward on each micro-step (accumulation step),
-        *before* optimizer.step / zero_grad.
-        We compute grads here so they are non-zero.
+        Fallback for when gradient_accumulation_steps=1
+        Called after optimizer.step()
         """
-        self._microstep_idx += 1
+        # Only use this if no gradient accumulation
+        if args.gradient_accumulation_steps == 1:
+            self._log_memory_stats(args, state, control, **kwargs)
+        return control
 
-        # Only log on last micro-step of each optimizer step
+    def on_substep_end(self, args, state, control, **kwargs):
+        """For gradient accumulation scenarios"""
+        self._microstep_idx += 1
+        
+        # Only log on last micro-step
         if self._microstep_idx % args.gradient_accumulation_steps != 0:
             return
+            
+        self._log_memory_stats(args, state, control, **kwargs)
 
-        # Respect logging cadence (global_step increments after optimizer step,
-        # so we use "next" step index for comparison)
+    def _log_memory_stats(self, args, state, control, **kwargs):
+        """Extracted logging logic"""
         next_global_step = state.global_step + 1
         if args.logging_strategy == "steps" and (next_global_step % args.logging_steps != 0):
             return
@@ -120,7 +128,6 @@ class VramBreakdownCallback(TrainerCallback):
         g_bytes = _grad_bytes(model) if model is not None else 0
         o_bytes = _optimizer_state_bytes(optimizer)
 
-        # activation estimate: forward pre→post delta of this micro-step
         act_bytes_est = 0
         if self._pre_fwd_alloc is not None and self._post_fwd_alloc is not None:
             act_bytes_est = max(0, self._post_fwd_alloc - self._pre_fwd_alloc)
@@ -128,7 +135,7 @@ class VramBreakdownCallback(TrainerCallback):
         log_record = {
             "mem/params_mb": _fmt_mb(p_bytes),
             "mem/buffers_mb": _fmt_mb(b_bytes),
-            "mem/grads_mb": _fmt_mb(g_bytes),  # should now be non-zero
+            "mem/grads_mb": _fmt_mb(g_bytes),
             "mem/optimizer_mb": _fmt_mb(o_bytes),
             "mem/activations_mb~": _fmt_mb(act_bytes_est),
             "mem/now_allocated_mb": _fmt_mb(now_alloc),
@@ -136,7 +143,6 @@ class VramBreakdownCallback(TrainerCallback):
             "mem/reserved_mb": _fmt_mb(reserved_alloc),
         }
 
-        # Send through Trainer and also print
         if trainer is not None:
             trainer.log(log_record)
         else:
