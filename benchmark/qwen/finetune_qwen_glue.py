@@ -19,18 +19,18 @@ logging.basicConfig(
 MODEL = "Qwen/Qwen2.5-0.5B"
 
 
-DATASET = "sst2"
-VALIDATION_SET = "validation"
-NUM_LABELS = 2
-EVAL_LOSS_STEPS=50
-NUM_EPOCHS=3
-
-# DATASET = "mnli"
-# VALIDATION_SET = "validation_matched"
-# #VALIDATION_SET = "validation_mismatched"
-# NUM_LABELS = 3
-# EVAL_LOSS_STEPS=200
+# DATASET = "sst2"
+# VALIDATION_SET = "validation"
+# NUM_LABELS = 2
+# EVAL_LOSS_STEPS=50
 # NUM_EPOCHS=3
+
+DATASET = "mnli"
+VALIDATION_SET = "validation_matched"
+#VALIDATION_SET = "validation_mismatched"
+NUM_LABELS = 3
+EVAL_LOSS_STEPS=25
+NUM_EPOCHS=1
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -44,7 +44,7 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 MODE="random"
 RANDOM_HOT_K_PERCENT = 0.2
-CHANGE_RANDOM_EVERY_ITERS = 100
+CHANGE_RANDOM_EVERY_ITERS = 0
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
 output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -55,19 +55,20 @@ args = TrainingArguments(
     output_dir=f"{output_dir}/ckpt",
     logging_dir=f"{output_dir}/logs",
     per_device_train_batch_size=16,
-    per_device_eval_batch_size=8,
+    per_device_eval_batch_size=16,
     gradient_accumulation_steps=2,
+    gradient_checkpointing=True,
     # gradient_accumulation_steps=1,
     num_train_epochs=NUM_EPOCHS,
     learning_rate=2e-5,
     # fp16=True,
     bf16=True,
-    logging_steps=100,
-    save_strategy="steps",
+    logging_steps=10,
+    save_strategy="epoch",
     eval_strategy="steps",
     eval_steps=EVAL_LOSS_STEPS,
     weight_decay=0.01,
-    save_steps=100,
+    #save_steps=100,
     # save_total_limit=2,
     ddp_find_unused_parameters=False,
     # max_steps = 16,
@@ -220,7 +221,12 @@ dump_cb = PerModuleGradDumper(
 
 
 # Start training
+start = time.time()
 trainer.train()
+end = time.time()
+hours, rem = divmod(end - start, 3600)
+minutes, seconds = divmod(rem, 60)
+print(f"Time elapsed: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
 
 
 

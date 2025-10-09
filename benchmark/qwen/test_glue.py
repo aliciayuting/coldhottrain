@@ -7,26 +7,26 @@ from datasets import load_dataset, DatasetDict
 import evaluate
 import sys
 
-DATASET = "sst2"
-VALIDATION_SET = "validation"
-NUM_LABELS = 2
-EPOCH_LENGTH = 527
+# DATASET = "sst2"
+# VALIDATION_SET = "validation"
+# NUM_LABELS = 2
+# EPOCH_LENGTH = 527
 
-# DATASET = "mnli"
-# #VALIDATION_SET = "validation_matched"
-# VALIDATION_SET = "validation_mismatched"
-# NUM_LABELS = 3
-# EPOCH_LENGTH = 3068
+DATASET = "mnli"
+#VALIDATION_SET = "validation_matched"
+VALIDATION_SET = "validation_mismatched"
+NUM_LABELS = 3
+EPOCH_LENGTH = 3068
 
 
 SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
 
 
-main_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca-neurons-80p-1e-randommask-20250927-002901")
+main_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRATCH, "jamal_runs/Qwen_Qwen2.5-0.5B-mnli-base-20250929-161428")
 checkpoint_dir = os.path.join(main_dir, "ckpt")
 gradient_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(main_dir, "grad_dump/step004500")
 masks_path = sys.argv[3] if len(sys.argv) > 3 else os.path.join(main_dir, "neuron_masks_0.pt")
-epoch_num = int(sys.argv[4]) if len(sys.argv) > 4 else 30
+epoch_num = int(sys.argv[4]) if len(sys.argv) > 4 else 3
 #EPOCH_LENGTH = int(sys.argv[5]) if len(sys.argv) > 5 else 3068
 
 MODEL = os.path.join(checkpoint_dir, f"checkpoint-{EPOCH_LENGTH*epoch_num}")
