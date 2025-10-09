@@ -36,10 +36,10 @@ def make_hot_idx(out_features: int, frac: float | None = None, idx: torch.Tensor
     perm = torch.randperm(out_features, device=device)
     return perm[:k].sort().values
 
-def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> LinearColWise:
+def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor, mode: str = "1linear_efficient") -> LinearColWise:
     assert isinstance(mod, nn.Linear)
     hot_idx = hot_idx.to(mod.weight.device)
-    wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx)
+    wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode=mode)
     wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
     return wrapped
 

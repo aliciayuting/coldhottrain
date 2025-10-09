@@ -475,7 +475,7 @@ class LinearColWise(nn.Module):
         )
 
     @staticmethod
-    def from_linear(base: nn.Linear, hot_idx: torch.Tensor) -> "LinearColWise":
+    def from_linear(base: nn.Linear, hot_idx: torch.Tensor, mode: str = "1linear_efficient") -> "LinearColWise":
         """Convenience: wrap an existing nn.Linear (weight [out,in], bias [out] or None)."""
         mod = LinearColWise(
             in_features=base.in_features,
@@ -484,6 +484,7 @@ class LinearColWise(nn.Module):
             bias=base.bias is not None,
             init_weight=base.weight.data.clone(),
             init_bias=None if base.bias is None else base.bias.data.clone(),
+            mode=mode
         )
         return mod
 

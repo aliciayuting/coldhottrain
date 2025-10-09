@@ -28,7 +28,7 @@ logging.basicConfig(
 torch.manual_seed(42)
 
 SCRATCH = "/mydata"
-MODEL = "Qwen/Qwen2.5-0.5B"
+MODEL = os.getenv("MODEL", "Qwen/Qwen2.5-0.5B")
 #MODEL = "Qwen/Qwen2.5-1.5B"
 
 
@@ -110,6 +110,15 @@ def tokenize_function_mnli(example):
         truncation=True,
         max_length=512
     )
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    v = v.lower()
+    if v in ("yes", "y", "true", "t", "1"):
+        return True
+    if v in ("no", "n", "false", "f", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value")
 
 if __name__ == "__main__":
     # read arguments from command line
@@ -117,15 +126,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--benchmark-time", action="store_true", help="Benchmark time using IterationTimeCallback")
     parser.add_argument("--skip-ratio", type=float, default=0.0, help="Skip Ratio for LinearColWise")
+    parser.add_argument("--mode", type=str, default="1linear_efficient", help="Mode for LinearColWise")
+    parser.add_argument("--gradient-checkpointing", type=str2bool, default=True, help="Enable gradient checkpointing")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1, help="Gradient accumulation steps")
     args_cmd = parser.parse_args()
     skip_ratio = args_cmd.skip_ratio
     benchmark_time = args_cmd.benchmark_time
+    mode = args_cmd.mode
+    gradient_checkpointing = args_cmd.gradient_checkpointing
+    gradient_accumulation_steps = args_cmd.gradient_accumulation_steps
 
-    print(f"skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}")
+    print(f"model= {MODEL}, skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}, mode = {mode}, gradient_checkpointing = {gradient_checkpointing}, gradient_accumulation_steps = {gradient_accumulation_steps}")
 
 
 
-    output_dir = os.path.join(SCRATCH, f"jamal-runs-sx/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}")
+    output_dir = os.path.join(SCRATCH, f"jamal-runs-benckmarking/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}")
     os.makedirs(output_dir, exist_ok=True)
     # print(f"Output dir: {output_dir}")
     # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -139,10 +154,10 @@ if __name__ == "__main__":
         logging_dir=f"{output_dir}/logs",
         per_device_train_batch_size=16,
         per_device_eval_batch_size=16,
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         #gradient_accumulation_steps=1,
         num_train_epochs=NUM_EPOCHS,
-        gradient_checkpointing=True,
+        gradient_checkpointing=gradient_checkpointing,
         learning_rate=2e-5,
         # fp16=True,
         bf16=True,
@@ -158,7 +173,7 @@ if __name__ == "__main__":
         #max_steps = 10,
         # logging_strategy="no",
         # disable_tqdm=True,
-        report_to="none"
+        #report_to="none"
     )
 
 
@@ -213,7 +228,7 @@ if __name__ == "__main__":
                 out_features = linear.out_features
                 # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
                 hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
-                wrapped = replace_linear_with_colwise(linear, hot_idx)
+                wrapped = replace_linear_with_colwise(linear, hot_idx, mode=mode)
                 if name.startswith("self_attn."):
                     setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
                 else:
