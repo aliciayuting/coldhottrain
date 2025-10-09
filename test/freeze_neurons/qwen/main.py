@@ -42,8 +42,8 @@ if DATASET == "sst2":
 elif DATASET == "mnli":
     VALIDATION_SET = "validation_matched"
     NUM_LABELS = 3
-    EVAL_LOSS_STEPS=10
-    NUM_EPOCHS=3
+    EVAL_LOSS_STEPS=25
+    NUM_EPOCHS=1
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -242,6 +242,8 @@ if __name__ == "__main__":
         print("SKIP is set to False, not replacing linear layers with LinearColWise.")
 
 
+    verify_shapes_across_ranks(model)
+    verify_weights_across_ranks(model)   # optional but thorough
 
 
 
@@ -354,7 +356,12 @@ if __name__ == "__main__":
     log_memory_stats()
 
     # Start training
+    start = time.time()
     trainer.train()
+    end = time.time()
+    hours, rem = divmod(end - start, 3600)
+    minutes, seconds = divmod(rem, 60)
+    print(f"Time elapsed: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
     
     log_memory_stats()
 
