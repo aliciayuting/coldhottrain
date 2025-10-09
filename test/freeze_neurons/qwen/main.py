@@ -32,18 +32,18 @@ MODEL = os.getenv("MODEL", "Qwen/Qwen2.5-0.5B")
 #MODEL = "Qwen/Qwen2.5-1.5B"
 
 
-DATASET = "sst2"
-VALIDATION_SET = "validation"
-NUM_LABELS = 2
-EVAL_LOSS_STEPS=50
+DATASET = os.getenv("DATASET", "sst2")  # Options: "sst2" or "mnli"
 
-# DATASET = "mnli"
-# VALIDATION_SET = "validation_matched"
-# #VALIDATION_SET = "validation_mismatched"
-# NUM_LABELS = 3
-# EVAL_LOSS_STEPS=500
-
-NUM_EPOCHS=1
+if DATASET == "sst2":
+    VALIDATION_SET = "validation"
+    NUM_LABELS = 2
+    EVAL_LOSS_STEPS=10
+    NUM_EPOCHS=1
+elif DATASET == "mnli":
+    VALIDATION_SET = "validation_matched"
+    NUM_LABELS = 3
+    EVAL_LOSS_STEPS=10
+    NUM_EPOCHS=3
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")

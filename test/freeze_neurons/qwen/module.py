@@ -442,8 +442,7 @@ class LinearColWise(nn.Module):
         y = x.new_empty(B, T, self.out_features)
 
         # Compute cold and hot paths (F.linear works on the last dim)
-        #TODO: see if turning this on/off for out_cold has an effect on memory. We want the gradients to flow through though right?
-        #with torch.no_grad():
+        #TODO: see if turning this on/off for out_cold has an effect on memory. We want the gradients to flow through though right? #with torch.no_grad():
         out_cold = F.linear(x, self.W_cold, self.b_cold if self.has_bias else None)   # [B, T, cold_dim]
         out_hot = F.linear(x, self.W_hot, self.b_hot if self.has_bias else None)          # [B, T, hot_dim]
 
@@ -451,6 +450,20 @@ class LinearColWise(nn.Module):
         # NOTE: use dim=2 because features are at the last axis
         y.index_copy_(2, self.cold_idx, out_cold)
         y.index_copy_(2, self.hot_idx,  out_hot)
+
+
+        # with torch.cuda.stream(self.s_cold):
+        #     out_cold = F.linear(x, self.W_cold, self.b_cold if self.has_bias else None)  # enqueued on s_cold
+
+        # with torch.cuda.stream(self.s_hot):
+        #     out_hot = F.linear(x, self.W_hot, self.b_hot if self.has_bias else None)     # enqueued on s_hot
+
+        # # Make the default stream wait for both results before using them
+        # self.s0.wait_stream(self.s_cold)
+        # self.s0.wait_stream(self.s_hot)
+        # y = x.new_empty(B, T, self.out_features)
+        # y.index_copy_(2, self.cold_idx, out_cold)
+        # y.index_copy_(2, self.hot_idx,  out_hot)
 
 
         # # ---- cold half ----
