@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-# Evaluate a Qwen2.5-0.5B + LoRA adapter on GLUE MNLI validation split
+# Train a LoRA adapter for Qwen2.5-0.5B on GLUE (SST-2 or MNLI)
+
+'''
+python3 lora_finetune_qwen_glue.py \
+  --task_name sst2 \
+  --output_dir qwen25_sst2_lora_adapter 
+'''
 
 import os
-
 import argparse
 from typing import Dict, Any
 
@@ -17,88 +22,108 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-from peft import PeftModel, prepare_model_for_kbit_training  # prepare_* not required for eval; safe to import
-
-
-MODEL = "Qwen/Qwen2.5-0.5B"
-DATASET = "mnli"
-NUM_LABELS = 3
-MAX_LEN = 256
-SEED = 42
-
-# From coldhot benchmark
-VALIDATION_SET = "validation_matched"
-# EVAL_LOSS_STEPS=500
-# NUM_EPOCHS=3
-VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
+from peft import (
+    LoraConfig,
+    get_peft_model,
+    PeftModel,
+    prepare_model_for_kbit_training,
+)
 
 
 
+# ---------- CLI ----------
 def parse_args():
-    p = argparse.ArgumentParser(description="Evaluate LoRA-tuned Qwen2.5-0.5B on GLUE MNLI")
-    p.add_argument("--adapter_dir", type=str, default="qwen25_mnli_lora_adapter",
-                   help="Path to saved LoRA adapter directory from training.")
-    p.add_argument("--validation_split", type=str, default="validation_matched",
-                   choices=["validation_matched", "validation_mismatched"],
-                   help="Which MNLI validation split to evaluate.")
-    p.add_argument("--batch_size", type=int, default=16, help="Per-device eval batch size.")
+    p = argparse.ArgumentParser(description="Train a LoRA adapter for Qwen2.5-0.5B on GLUE")
+    p.add_argument("--task_name", type=str, default="sst2", choices=["sst2", "mnli"],
+                   help="GLUE task to fine-tune on.")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B",
+                   help="Base model to fine-tune.")
+    p.add_argument("--output_dir", type=str, default="qwen25_lora_glue_adapter",
+                   help="Where to save the LoRA adapter.")
     p.add_argument("--use_qlora", type=str, default="false",
-                   help="If 'true', load base in 4-bit (bitsandbytes) for evaluation.")
-    p.add_argument("--save_preds", type=str, default="",
-                   help="Optional path to save predictions as CSV (premise,hypothesis,label,pred).")
-    return p.parse_args()
+                   help="If 'true', load base in 4-bit and prepare for k-bit training.")
+    p.add_argument("--max_len", type=int, default=256)
+    p.add_argument("--batch_size", type=int, default=16, help="Per-device train/eval batch size.")
+    p.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps.")
+    p.add_argument("--num_epochs", type=float, default=3.0)
+    p.add_argument("--learning_rate", type=float, default=2e-5)
+    p.add_argument("--weight_decay", type=float, default=0.1)
+    # p.add_argument("--warmup_ratio", type=float, default=0.06)
+    p.add_argument("--logging_steps", type=int, default=100)
+    p.add_argument("--eval_steps", type=int, default=500)
+    # p.add_argument("--save_steps", type=int, default=200)
+    # p.add_argument("--seed", type=int, default=42)
 
+    # LoRA hyperparams
+    p.add_argument("--lora_r", type=int, default=8)
+    p.add_argument("--lora_alpha", type=float, default=16)
+    p.add_argument("--lora_dropout", type=float, default=0) #0.05
+
+    # Mixed precision
+    p.add_argument("--fp16", action="store_true", help="Force FP16 (overrides bf16 if both set).")
+    p.add_argument("--bf16", action="store_true", help="Use BF16 if available.")
+    return p.parse_args()
 
 def str2bool(s: str) -> bool:
     return s.lower() in {"1", "true", "t", "yes", "y"}
 
-def tokenize_function_sst(examples):
-    return tok(
-        examples["sentence"],
-        padding="max_length",
-        truncation=True,
-        max_length=512
-    )
+# ---------- Data ----------
+def get_num_labels(task: str) -> int:
+    return 3 if task == "mnli" else 2
 
-def main():
-    args = parse_args()
-    use_qlora = str2bool(args.use_qlora)
-
-    # 1) Data & tokenizer
-    ds = load_dataset("nyu-mll/glue", DATASET)
-    tokenized_ds = ds.map(tokenize_function_sst, batched=False)
-
-    tok = AutoTokenizer.from_pretrained(MODEL, use_fast=True)
-    data_collator = DataCollatorWithPadding(tokenizer=tok)
-
-     
-
-
-    # --- critical: ensure a pad token and use right-padding for decoder-only cls ---
+def build_tokenizer(model_name: str):
+    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-#     tok.padding_side = "right"
+    tok.padding_side = "right"
+    return tok
 
-    def preprocess(ex):
-        return tok(ex["premise"], ex["hypothesis"], truncation=True, max_length=MAX_LEN)
+def load_glue(task: str):
+    # hf hub key for glue is just "glue"
+    ds = load_dataset("glue", task)
+    return ds
 
-    eval_ds = eval_raw.map(
-        preprocess,
-        batched=True,
-        remove_columns=[c for c in eval_raw.column_names if c not in ("label")] + ["premise", "hypothesis"],
-    )
-    keep_cols = ("input_ids", "attention_mask", "label")
-    drop_cols = [c for c in eval_ds.column_names if c not in keep_cols]
-    if drop_cols:
-        eval_ds = eval_ds.remove_columns(drop_cols)
+def tokenizers_for_task(task: str, tok, max_len: int):
+    if task == "sst2":
+        def tok_fn(ex):
+            return tok(ex["sentence"], truncation=True, max_length=max_len)
+        remove_cols = ["sentence", "label", "idx"]
+    else:  # mnli
+        def tok_fn(ex):
+            return tok(ex["premise"], ex["hypothesis"], truncation=True, max_length=max_len)
+        remove_cols = ["premise", "hypothesis", "label", "idx"]
 
-    # 2) Config & base model with pad_token_id propagated everywhere
+    return tok_fn, remove_cols
+
+# ---------- Metrics ----------
+def make_compute_metrics(task: str):
+    # For both SST-2 and MNLI, accuracy is a good primary metric
+    accuracy_metric = evaluate.load("accuracy")
+
+    def compute_metrics(eval_pred):
+        logits, labels = eval_pred
+        predictions = np.argmax(logits, axis=-1)
+        accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+        return accuracy 
+        # preds = eval_pred.predictions
+        # if isinstance(preds, tuple):
+        #     preds = preds[0]
+        # y_pred = preds.argmax(axis=-1)
+        # y_true = eval_pred.label_ids
+        # return accuracy_metric.compute(predictions=y_pred, references=y_true)
+
+    return compute_metrics
+
+# ---------- Model init (with optional QLoRA) ----------
+def load_base_model(args, tok, num_labels: int):
     cfg = AutoConfig.from_pretrained(
-        MODEL,
-        num_labels=NUM_LABELS,
+        args.model_name,
+        num_labels=num_labels,
         problem_type="single_label_classification",
-        pad_token_id=tok.pad_token_id,   # <-- critical
+        pad_token_id=tok.pad_token_id,
     )
+
+    use_qlora = str2bool(args.use_qlora) if isinstance(args.use_qlora, str) else args.use_qlora
 
     if use_qlora:
         from transformers import BitsAndBytesConfig
@@ -114,91 +139,122 @@ def main():
             bnb_4bit_compute_dtype=compute_dtype,
         )
         base = AutoModelForSequenceClassification.from_pretrained(
-            MODEL, config=cfg, quantization_config=bnb_cfg, device_map="auto"
+            args.model_name, config=cfg, quantization_config=bnb_cfg, device_map="auto"
         )
-        # Not required for eval, but harmless:
         base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
     else:
-        base = AutoModelForSequenceClassification.from_pretrained(MODEL, config=cfg)
+        base = AutoModelForSequenceClassification.from_pretrained(args.model_name, config=cfg)
 
-    # Keep embeddings & configs synchronized with tokenizer pad
     base.resize_token_embeddings(len(tok))
     base.config.pad_token_id = tok.pad_token_id
     if getattr(base, "generation_config", None) is not None:
         base.generation_config.pad_token_id = tok.pad_token_id
 
-    # 3) Attach LoRA adapter
-    model = PeftModel.from_pretrained(base, args.adapter_dir)
-    model.config.pad_token_id = tok.pad_token_id  # final safety
-    model.eval()
+    return base
 
-    # 4) Metrics & collator
-    metric = evaluate.load("glue", DATASET)
+def wrap_with_lora(base, args):
+    # Typical Qwen target modules for LoRA on seq cls
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-    def compute_metrics(p):
-        preds = p.predictions[0] if isinstance(p.predictions, tuple) else p.predictions
-        preds = preds.argmax(axis=-1)
-        return metric.compute(predictions=preds, references=p.label_ids)
+    lora_cfg = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        task_type="SEQ_CLS",
+        target_modules=target_modules,
+    )
+    model = get_peft_model(base, lora_cfg)
+    # Show trainable params for sanity
+    model.print_trainable_parameters()
+    return model
 
-    data_collator = DataCollatorWithPadding(
+# ---------- Main ----------
+def main():
+    args = parse_args()
+    # torch.manual_seed(args.seed)
+
+    # Data
+    tok = build_tokenizer(args.model_name)
+    ds = load_dataset("nyu-mll/glue", args.task_name)
+    num_labels = get_num_labels(args.task_name)
+
+    tok_fn, remove_cols = tokenizers_for_task(args.task_name, tok, args.max_len)
+    ds_tok = ds.map(tok_fn, batched=True)
+    if "label" in ds_tok["train"].column_names:
+        ds_tok = ds_tok.rename_column("label", "labels")
+    # Keep label + model inputs only (HF Trainer handles "label")
+    cols_to_remove = [c for c in remove_cols if c in ds_tok["train"].column_names]
+    if cols_to_remove:
+        ds_tok = ds_tok.remove_columns(cols_to_remove)
+
+    # Splits
+    if args.task_name == "mnli":
+        eval_split = "validation_matched"
+        eval_dataset = ds_tok[eval_split]
+        # (You could also evaluate mismatched separately if desired)
+    else:
+        eval_dataset = ds_tok["validation"]
+    train_dataset = ds_tok["train"]
+
+    collator = DataCollatorWithPadding(
         tokenizer=tok, pad_to_multiple_of=8 if torch.cuda.is_available() else None
     )
 
-    use_bf16 = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+    # Model
+    base = load_base_model(args, tok, num_labels)
+    model = wrap_with_lora(base, args)
 
-    eval_args = TrainingArguments(
-        output_dir="eval_tmp",
+    # Precision
+    use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+    fp16 = args.fp16 or (not args.bf16 and not use_bf16_hw)  # default to fp16 on older GPUs
+    bf16 = args.bf16 or (use_bf16_hw and not args.fp16)
+
+    # TrainingArguments
+    training_args = TrainingArguments(
+        output_dir=args.output_dir,
+        per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
-        dataloader_num_workers=4,
-        fp16=not use_bf16,
-        bf16=use_bf16,
-        report_to="none",
-        seed=SEED,
+        gradient_accumulation_steps=args.grad_accum,
+        num_train_epochs=args.num_epochs,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        # warmup_ratio=args.warmup_ratio,
+        logging_steps=args.logging_steps,
+        eval_steps=args.eval_steps,
+        # save_steps=args.save_steps,
+        # save_total_limit=2,
+        # greater_is_better=True,
+        # fp16=fp16,
+        # bf16=bf16,
+        # report_to="none",
+        # seed=args.seed,
     )
+
+    compute_metrics = make_compute_metrics(args.task_name)
 
     trainer = Trainer(
         model=model,
-        args=eval_args,
-        eval_dataset=eval_ds,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         tokenizer=tok,
-        data_collator=data_collator,
+        data_collator=collator,
         compute_metrics=compute_metrics,
     )
 
-    results: Dict[str, Any] = trainer.evaluate()
-    print(f"\n=== Evaluation on {args.validation_split} ===")
-    for k, v in results.items():
-        print(f"{k}: {v}")
+    # Train
+    trainer.train()
 
-    # 5) Optional: save predictions
-    if args.save_preds:
-        import pandas as pd
-        import numpy as np
-        preds = trainer.predict(eval_ds).predictions
-        if isinstance(preds, tuple):
-            preds = preds[0]
-        y_pred = np.argmax(preds, axis=-1)
+    # Save ONLY the LoRA adapter
+    model.save_pretrained(args.output_dir)
+    # Optionally keep tokenizer/config alongside (useful for later)
+    tok.save_pretrained(args.output_dir)
 
-        df = eval_raw.to_pandas()[["premise", "hypothesis", "label"]].copy()
-        df["pred"] = y_pred
-        df.to_csv(args.save_preds, index=False)
-        print(f"\nSaved predictions to: {args.save_preds}")
-
-    # 6) Optional: also evaluate the other split
-    other = "validation_mismatched" if args.validation_split == "validation_matched" else "validation_matched"
-    if other in ds_all:
-        other_raw = ds_all[other]
-        other_ds = other_raw.map(
-            preprocess,
-            batched=True,
-            remove_columns=[c for c in other_raw.column_names if c not in ("label")] + ["premise", "hypothesis"],
-        )
-        other_ds = other_ds.remove_columns([c for c in other_ds.column_names if c not in keep_cols])
-        other_res = trainer.evaluate(other_ds)
-        print(f"\n=== Evaluation on {other} ===")
-        for k, v in other_res.items():
-            print(f"{k}: {v}")
-
+    print(f"\nLoRA adapter saved to: {args.output_dir}")
+    print("You can later load it with:\n"
+          "  base = AutoModelForSequenceClassification.from_pretrained('Qwen/Qwen2.5-0.5B', config=cfg)\n"
+          "  model = PeftModel.from_pretrained(base, '<adapter_dir>')")
 
 if __name__ == "__main__":
     main()
