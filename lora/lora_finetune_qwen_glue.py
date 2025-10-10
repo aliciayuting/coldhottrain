@@ -10,6 +10,7 @@ python3 lora_finetune_qwen_glue.py \
 import os
 import argparse
 from typing import Dict, Any
+import numpy as np
 
 import torch
 from datasets import load_dataset
@@ -77,11 +78,6 @@ def build_tokenizer(model_name: str):
         tok.pad_token = tok.eos_token
     tok.padding_side = "right"
     return tok
-
-def load_glue(task: str):
-    # hf hub key for glue is just "glue"
-    ds = load_dataset("glue", task)
-    return ds
 
 def tokenizers_for_task(task: str, tok, max_len: int):
     if task == "sst2":
