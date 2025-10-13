@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --gpus 4
-#SBATCH --time=01:00:00
+#SBATCH --time=02:30:00
 #SBATCH --constraint=gpu
 #SBATCH --qos=regular
-#SBATCH --account=m4646
+#SBATCH --account=m4341
 
 # set up for problem & define any environment variables here
 
@@ -16,7 +16,7 @@ echo "HF_HOME=$HF_HOME"
 echo "TRANSFORMERS_CACHE=$TRANSFORMERS_CACHE"
 echo "HF_DATASETS_CACHE=$HF_DATASETS_CACHE"
 
-ratio=0.8
+ratio=0.0
 mode="1linear_efficient"
 MODEL=Qwen/Qwen2.5-0.5B
 DATASET="mnli"

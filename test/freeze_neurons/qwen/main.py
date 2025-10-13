@@ -15,7 +15,7 @@ import torch.nn as nn
 import os
 import numpy as np
 from iteration_time_callback import IterationTimeCallback
-
+from hotswap import HotSwapCallback
 
 from module import *
 from helper import *
@@ -25,7 +25,7 @@ logging.basicConfig(
         format="[%(levelname)s] %(message)s"
     )
 
-torch.manual_seed(42)
+torch.manual_seed(43)
 
 SCRATCH = "/mydata"
 MODEL = os.getenv("MODEL", "Qwen/Qwen2.5-0.5B")
@@ -42,7 +42,7 @@ if DATASET == "sst2":
 elif DATASET == "mnli":
     VALIDATION_SET = "validation_matched"
     NUM_LABELS = 3
-    EVAL_LOSS_STEPS=25
+    EVAL_LOSS_STEPS=500
     NUM_EPOCHS=1
 
 RUN_NAME = "random-20p"
@@ -205,7 +205,7 @@ if __name__ == "__main__":
 
         embedding: nn.Embedding = model.model.embed_tokens
         hot_idx = make_hot_idx(embedding.num_embeddings, frac=1-skip_ratio, device=embedding.weight.device)
-        model.model.embed_tokens = replace_embedding_with_colwise(embedding, hot_idx)
+        #model.model.embed_tokens = replace_embedding_with_colwise(embedding, hot_idx)
 
         layers = get_decoder_layers(model)   # <-- the fix
         layer_idx = 23
@@ -262,7 +262,7 @@ if __name__ == "__main__":
 
     print(tokenized_ds)
     # Data collator
-    data_collator = DataCollatorWithPadding(tokenizer=tok)
+    data_collator = DataCollatorWithPadding(tokenizer=tok, pad_to_multiple_of=8)
 
     accuracy_metric = evaluate.load("accuracy")
 
@@ -342,6 +342,9 @@ if __name__ == "__main__":
     #trainer.add_callback(probe_cb)
     trainer.add_callback(ram_cb)
     
+
+    hotswap_cb = HotSwapCallback()
+    trainer.add_callback(hotswap_cb)
 
     print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
 

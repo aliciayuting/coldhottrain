@@ -224,6 +224,9 @@ class EfficientFullLinear(torch.autograd.Function):
             
             # Split back to cold/hot
             cold_dim = W_cold.size(0)
+
+            #this is the thing that saves memory. allows grad_W_cat to be deleted, and only the needed hot grads are saved.
+            #with no clone, the grad_W_cat is a view of grad_W_full, means the whole matrix is needed for grad_x computation instead of just the 20% of hot ones.
             grad_W_cold = grad_W_cat[:cold_dim].clone() if ctx.needs_input_grad[1] else None
             grad_W_hot = grad_W_cat[cold_dim:].clone() if ctx.needs_input_grad[2] else None
             
@@ -486,6 +489,180 @@ class LinearColWise(nn.Module):
             self.cold_idx, self.hot_idx,
             self.out_features
         )
+
+
+    @torch.no_grad()
+    def switch_hot(self,
+                   new_hot_idx: torch.Tensor,
+                   optimizer: torch.optim.Optimizer | None = None,
+                   keep_state: bool = True):
+        """
+        Change which output rows are trainable (“hot”) without ever creating a full [out,in] Parameter.
+        If `optimizer` is provided, its state is patched so only hot rows hold state.
+        
+        Must be called between optimizer steps (no outstanding graph using the old params).
+        """
+        device = self.W_cold.device
+        dtype  = self.W_cold.dtype
+        new_hot_idx = new_hot_idx.to(device=device, dtype=torch.long).unique(sorted=True)
+
+        # Fast no-op if identical
+        if torch.equal(new_hot_idx, self.hot_idx):
+            return
+
+        # --- derive new cold indices and new reorder ---
+        all_idx = torch.arange(self.out_features, device=device, dtype=torch.long)
+        new_cold_idx = torch.tensor(
+            sorted(set(all_idx.tolist()) - set(new_hot_idx.tolist())),
+            device=device, dtype=torch.long
+        )
+
+        new_reorder = torch.empty(self.out_features, dtype=torch.long, device=device)
+        new_reorder[new_cold_idx] = torch.arange(len(new_cold_idx), device=device)
+        new_reorder[new_hot_idx]  = torch.arange(len(new_hot_idx),  device=device) + len(new_cold_idx)
+
+        # --- build mapping: output-index -> row-in-current W_hot/W_cold ---
+        # (-1) means “doesn’t live here”
+        hot_row_of_out = torch.full((self.out_features,), -1, device=device, dtype=torch.long)
+        hot_row_of_out[self.hot_idx] = torch.arange(self.W_hot.size(0), device=device)
+        cold_row_of_out = torch.full((self.out_features,), -1, device=device, dtype=torch.long)
+        cold_row_of_out[self.cold_idx] = torch.arange(self.W_cold.size(0), device=device)
+
+        # --- gather new W_hot (in exact new_hot_idx order) without materializing full weight ---
+        take_from_old_hot = torch.isin(new_hot_idx, self.hot_idx)
+        nh_from_hot = new_hot_idx[take_from_old_hot]
+        nh_from_cold = new_hot_idx[~take_from_old_hot]
+
+        parts_W_hot = []
+        if nh_from_hot.numel():
+            parts_W_hot.append(self.W_hot.index_select(0, hot_row_of_out.index_select(0, nh_from_hot)))
+        if nh_from_cold.numel():
+            parts_W_hot.append(self.W_cold.index_select(0, cold_row_of_out.index_select(0, nh_from_cold)))
+        new_W_hot_tensor = (torch.cat(parts_W_hot, dim=0)
+                            if parts_W_hot else torch.empty(0, self.in_features, device=device, dtype=dtype))
+
+        # --- gather new W_cold (in exact new_cold_idx order) ---
+        take_from_old_hot_cold = torch.isin(new_cold_idx, self.hot_idx)
+        nc_from_hot = new_cold_idx[take_from_old_hot_cold]
+        nc_from_cold = new_cold_idx[~take_from_old_hot_cold]
+
+        parts_W_cold = []
+        if nc_from_cold.numel():
+            parts_W_cold.append(self.W_cold.index_select(0, cold_row_of_out.index_select(0, nc_from_cold)))
+        if nc_from_hot.numel():
+            parts_W_cold.append(self.W_hot.index_select(0, hot_row_of_out.index_select(0, nc_from_hot)))
+        new_W_cold_tensor = (torch.cat(parts_W_cold, dim=0)
+                             if parts_W_cold else torch.empty(0, self.in_features, device=device, dtype=dtype))
+
+        # --- bias (if present) ---
+        if self.has_bias:
+            b_hot_tensor = []
+            if nh_from_hot.numel():
+                b_hot_tensor.append(self.b_hot.index_select(0, hot_row_of_out.index_select(0, nh_from_hot)))
+            if nh_from_cold.numel():
+                b_hot_tensor.append(self.b_cold.index_select(0, cold_row_of_out.index_select(0, nh_from_cold)))
+            new_b_hot_tensor = (torch.cat(b_hot_tensor, dim=0)
+                                if b_hot_tensor else torch.empty(0, device=device, dtype=dtype))
+
+            b_cold_tensor = []
+            if nc_from_cold.numel():
+                b_cold_tensor.append(self.b_cold.index_select(0, cold_row_of_out.index_select(0, nc_from_cold)))
+            if nc_from_hot.numel():
+                b_cold_tensor.append(self.b_hot.index_select(0, hot_row_of_out.index_select(0, nc_from_hot)))
+            new_b_cold_tensor = (torch.cat(b_cold_tensor, dim=0)
+                                 if b_cold_tensor else torch.empty(0, device=device, dtype=dtype))
+
+        # --- remember which new-hot rows came from the old-hot param (to preserve state rows) ---
+        # in the newly built W_hot, rows [0:nh_from_hot] correspond to nh_from_hot (same order we appended).
+        new_rows_from_old_hot = torch.arange(nh_from_hot.numel(), device=device, dtype=torch.long)
+        old_rows_for_those    = hot_row_of_out.index_select(0, nh_from_hot)  # row ids inside old W_hot
+
+        # --- swap tensors into module (create new Parameter objects for hot parts) ---
+        old_W_hot_param = self.W_hot
+        self.W_hot = nn.Parameter(new_W_hot_tensor, requires_grad=True)
+        self.W_cold = new_W_cold_tensor  # stays a buffer
+
+        if self.has_bias:
+            old_b_hot_param = self.b_hot
+            self.b_hot = nn.Parameter(new_b_hot_tensor, requires_grad=True)
+            self.b_cold = new_b_cold_tensor
+        else:
+            old_b_hot_param = None
+
+        # update index buffers
+        self.hot_idx = new_hot_idx
+        self.cold_idx = new_cold_idx
+        self.reorder_idx = new_reorder
+
+        # --- patch optimizer (optional) ---
+        if optimizer is not None:
+            self._swap_param_in_optimizer(
+                optimizer, old_W_hot_param, self.W_hot,
+                keep_state=keep_state,
+                new_rows_from_old=new_rows_from_old_hot,
+                old_rows_for_those=old_rows_for_those
+            )
+            if self.has_bias and old_b_hot_param is not None:
+                # bias remapping is 1D, same row mapping as weights
+                self._swap_param_in_optimizer(
+                    optimizer, old_b_hot_param, self.b_hot,
+                    keep_state=keep_state,
+                    new_rows_from_old=new_rows_from_old_hot,
+                    old_rows_for_those=old_rows_for_those
+                )
+
+    @staticmethod
+    def _find_param_in_optimizer(optimizer, target):
+        for g in optimizer.param_groups:
+            for i, p in enumerate(g['params']):
+                if p is target:           # identity check avoids __eq__
+                    return g, i
+        return None, None
+
+    @staticmethod
+    def _swap_param_in_optimizer(optimizer: torch.optim.Optimizer,
+                                 old_param: nn.Parameter,
+                                 new_param: nn.Parameter,
+                                 *,
+                                 keep_state: bool,
+                                 new_rows_from_old: torch.Tensor,
+                                 old_rows_for_those: torch.Tensor):
+        """
+        Replace `old_param` by `new_param` in the optimizer param groups.
+        If keep_state=True, slice row-wise state tensors so rows that stayed hot keep their state.
+        Newly hot rows get zero-initialized state. Cold rows' state is dropped.
+        """
+        # Locate the param group containing old_param
+        group_found, idx_in_group = LinearColWise._find_param_in_optimizer(optimizer, old_param)
+        if group_found is None:
+        # Old param not managed by this optimizer; nothing to do
+            return
+
+        # Replace param in group
+        group_found['params'][idx_in_group] = new_param
+
+        # Move / rebuild state
+        old_state = optimizer.state.pop(old_param, None)
+        if not keep_state or old_state is None or len(old_state) == 0:
+            optimizer.state[new_param] = {}  # lazy init by optimizer on first step
+            return
+
+        # Build a fresh state dict with same keys but row-sliced tensors
+        new_state = {}
+        for k, v in old_state.items():
+            if torch.is_tensor(v) and v.shape == old_param.shape:
+                # v is a row-wise state tensor (e.g., exp_avg, exp_avg_sq, momentum_buffer)
+                # Initialize zeros for the whole new_param, then copy the subset rows that remained hot.
+                tgt = new_param.new_zeros(new_param.shape)
+                if new_rows_from_old.numel() > 0:
+                    src_rows = v.index_select(0, old_rows_for_those)
+                    tgt.index_copy_(0, new_rows_from_old, src_rows)
+                new_state[k] = tgt
+            else:
+                # scalars (e.g., step) or tensors not matching param shape: keep as is
+                new_state[k] = v
+
+        optimizer.state[new_param] = new_state
 
     @staticmethod
     def from_linear(base: nn.Linear, hot_idx: torch.Tensor, mode: str = "1linear_efficient") -> "LinearColWise":

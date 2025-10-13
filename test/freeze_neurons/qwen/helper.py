@@ -38,6 +38,27 @@ def make_hot_idx(out_features: int, frac: float | None = None, idx: torch.Tensor
     perm = torch.randperm(out_features, device=device)
     return perm[:k].sort().values
 
+import torch
+
+def make_hot_idx_n(
+    out_features: int,
+    n: int | None = None,
+    device=None,
+) -> torch.Tensor:
+
+    assert n is not None and isinstance(n, int)
+    k = max(0, min(out_features, int(n)))
+
+    # TODO: remove this later (kept to match original semantics)
+    if k == out_features:
+        k = out_features - 1
+
+    if k == 0:
+        return torch.zeros(0, dtype=torch.long, device=device)
+
+    perm = torch.randperm(out_features, device=device)
+    return perm[:k].sort().values
+
 def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor, mode: str = "1linear_efficient") -> LinearColWise:
     assert isinstance(mod, nn.Linear)
     hot_idx = hot_idx.to(mod.weight.device)
