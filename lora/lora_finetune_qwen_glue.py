@@ -23,6 +23,8 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+import logging 
+from probe2 import *
 from peft import (
     LoraConfig,
     get_peft_model,
@@ -30,7 +32,10 @@ from peft import (
     prepare_model_for_kbit_training,
 )
 
-
+logging.basicConfig(
+        level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
+        format="[%(levelname)s] %(message)s"
+    )
 
 # ---------- CLI ----------
 def parse_args():
@@ -43,14 +48,14 @@ def parse_args():
                    help="Where to save the LoRA adapter.")
     p.add_argument("--use_qlora", type=str, default="false",
                    help="If 'true', load base in 4-bit and prepare for k-bit training.")
-    p.add_argument("--max_len", type=int, default=256)
+    p.add_argument("--max_len", type=int, default=512)
     p.add_argument("--batch_size", type=int, default=16, help="Per-device train/eval batch size.")
     p.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps.")
-    p.add_argument("--num_epochs", type=float, default=3.0)
+    p.add_argument("--num_epochs", type=float, default=1.0)
     p.add_argument("--learning_rate", type=float, default=2e-5)
-    p.add_argument("--weight_decay", type=float, default=0.1)
+    p.add_argument("--weight_decay", type=float, default=0.01)
     # p.add_argument("--warmup_ratio", type=float, default=0.06)
-    p.add_argument("--logging_steps", type=int, default=100)
+    p.add_argument("--logging_steps", type=int, default=10)
     p.add_argument("--eval_steps", type=int, default=500)
     # p.add_argument("--save_steps", type=int, default=200)
     # p.add_argument("--seed", type=int, default=42)
@@ -215,14 +220,17 @@ def main():
         num_train_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        gradient_checkpointing=True,
         # warmup_ratio=args.warmup_ratio,
         logging_steps=args.logging_steps,
+        eval_strategy="steps",
         eval_steps=args.eval_steps,
+        ddp_find_unused_parameters=False,
         # save_steps=args.save_steps,
         # save_total_limit=2,
         # greater_is_better=True,
         # fp16=fp16,
-        # bf16=bf16,
+         #bf16=bf16,
         # report_to="none",
         # seed=args.seed,
     )
@@ -239,9 +247,24 @@ def main():
         compute_metrics=compute_metrics,
     )
 
+    ram_cb = VramBreakdownCallback()
+
+    #trainer.add_callback(probe_cb)
+    trainer.add_callback(ram_cb)
+
+    def log_memory_stats():
+        """Log current GPU memory statistics"""
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**2
+        reserved = torch.cuda.memory_reserved() / 1024**2
+        
+        logging.info(f"GPU Memory - Allocated: {allocated:.2f} MB, Max Allocated: {max_allocated:.2f} MB, Reserved: {reserved:.2f} MB")
+
+    log_memory_stats()
+
     # Train
     trainer.train()
-
+    log_memory_stats()
     # Save ONLY the LoRA adapter
     model.save_pretrained(args.output_dir)
     # Optionally keep tokenizer/config alongside (useful for later)
