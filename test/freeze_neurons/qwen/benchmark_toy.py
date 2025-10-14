@@ -14,6 +14,54 @@ from transformers import (
     default_data_collator,
 )
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def nvtx_range(name: str):
+    torch.cuda.nvtx.range_push(name)
+    try:
+        yield
+    finally:
+        torch.cuda.nvtx.range_pop()
+
+def _register_nvtx_hooks_recursively(root: torch.nn.Module, prefix: str = ""):
+    """
+    Registers forward pre/post hooks on *every* submodule.
+    Each NVTX range name is the fully-qualified path, e.g.:
+      model.layers.0.self_attn.q_proj
+      model.layers.0.input_layernorm
+      model.layers.0.self_attn
+      model.layers.0.mlp.gate_proj
+    """
+    # Give each module a stable name
+    for name, module in root.named_children():
+        fqname = f"{prefix}.{name}" if prefix else name
+
+        def pre_hook(mod, inputs, _fq=fqname):
+            torch.cuda.nvtx.range_push(_fq)
+
+        def post_hook(mod, inputs, output, _fq=fqname):
+            torch.cuda.nvtx.range_pop()
+
+        module.register_forward_pre_hook(pre_hook)
+        module.register_forward_hook(post_hook)
+
+        # Recurse
+        _register_nvtx_hooks_recursively(module, fqname)
+
+def instrument_model_for_nvtx(model: torch.nn.Module):
+    # Put an outer range for the whole model call as well
+    def pre_root(mod, inputs):
+        torch.cuda.nvtx.range_push("MODEL_FORWARD")
+
+    def post_root(mod, inputs, output):
+        torch.cuda.nvtx.range_pop()
+
+    model.register_forward_pre_hook(pre_root)
+    model.register_forward_hook(post_root)
+    _register_nvtx_hooks_recursively(model)
+
 class NVTXTrainer(Trainer):
     # Forward: only tag the model's forward/compute_loss region
     def compute_loss(
@@ -47,7 +95,8 @@ class NVTXTrainer(Trainer):
 model_name = "Qwen/Qwen2.5-0.5B"
 # MODEL = "Qwen/Qwen2.5-14B"
 
-output_dir = f"/pscratch/sd/l/lsx/runs/{model_name.replace('/', '_')}-toydataset/"
+# output_dir = f"/pscratch/sd/l/lsx/runs/{model_name.replace('/', '_')}-toydataset/"
+output_dir = f"/mnt/coldhot/shouxu_runs/{model_name.replace('/', '_')}-toydataset/"
 os.makedirs(output_dir, exist_ok=True)
 
 
@@ -87,6 +136,24 @@ def main():
         tok.pad_token = tok.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(model_name)  # do NOT .cuda(); Trainer handles placement
+    model.model.layers = model.model.layers[:1]
+    model.config.num_hidden_layers = 1
+    instrument_model_for_nvtx(model)
+    
+    for name, module in model.named_modules():
+        print(name, "->", module.__class__.__name__)
+
+
+    cfg = model.config
+    print("hidden_size:", cfg.hidden_size)                       # 896
+    print("num_attention_heads:", cfg.num_attention_heads)       # 14
+    print("num_key_value_heads:", getattr(cfg, "num_key_value_heads", None))  # 2
+    print("head_dim:", cfg.hidden_size // cfg.num_attention_heads)            # 64
+    print("kv_proj_out:", (getattr(cfg, "num_key_value_heads", 2) * (cfg.hidden_size // cfg.num_attention_heads)))  # 128
+    print("num_layers: ", model.config.num_hidden_layers)
+
+    # exit(0)
+
 
     train_data = TinyText(tok, n=128, max_len=64)
 
@@ -114,8 +181,9 @@ def main():
     )
 
     # Enable autograd/operator-level NVTX names once for the whole run
-    with torch.autograd.profiler.emit_nvtx():
-        trainer.train()
+    # with torch.autograd.profiler.emit_nvtx():
+        # trainer.train()
+    trainer.train()
 
 if __name__ == "__main__":
     main()
