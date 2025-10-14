@@ -294,6 +294,9 @@ if __name__ == "__main__":
         callbacks=[time_callback] if benchmark_time else [],
     )
 
+    wrapped_model = trainer.model_wrapped
+    r = wrapped_model.reducer
+    print("Initial DDP bucket bytes:", sum(b.buffer().numel() * b.buffer().element_size() for b in r._buckets))
 
 
 

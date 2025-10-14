@@ -1,3 +1,4 @@
+import time
 from transformers import TrainerCallback
 import torch.distributed as dist
 import torch
@@ -50,11 +51,17 @@ class HotSwapCallback(TrainerCallback):
             opt = opt.optimizer
         return opt
     
+    def ddp_bucket_bytes(self, ddp_model):
+        r = ddp_model.reducer
+        return sum(b.buffer().numel() * b.buffer().element_size() for b in r._buckets)
+
     #TODO: this is before gradients are zeroed out. make sure this is not an issue
     def on_optimizer_step(self, args, state, control, **kwargs):
-        if state.global_step % 20 != 0 or state.global_step <= 0:
+        #if state.global_step % 20 != 0 or state.global_step <= 0:
+        if state.global_step % 20 != 0:
             return
         wrapped = kwargs.get("model")
+        wrapped2 = kwargs.get("model_wrapped")
         if wrapped is None:
             logger.warning("HotSwapCallback: model not found in kwargs")
             return  # rare, but be defensive
@@ -65,10 +72,17 @@ class HotSwapCallback(TrainerCallback):
             logger.warning("no optimizer :(")
             return
         optimizer = self._unwrap_optimizer(optimizer)
+
+        optimizer.zero_grad(set_to_none=True)
+
         logger.info(f"[hotswap on_optimizer_step] global_step={state.global_step}")
-        layers: nn.Module = get_decoder_layers(self.model)
-        for layer in layers:
-            for name, mod in layer.named_modules():
-                if isinstance(mod, LinearColWise):
-                    #logger.info(f"found {name}")
-                    mod.switch_hot(new_hot_idx=make_hot_idx_n(out_features=mod.out_features, n=mod.hot_idx.numel(), device=mod.W_hot.device), keep_state=True, optimizer=optimizer)
+        logger.info("bucket bytes BEFORE:", self.ddp_bucket_bytes(wrapped2))
+
+        with torch.no_grad():
+            layers: nn.Module = get_decoder_layers(self.model)
+            for layer in layers:
+                for name, mod in layer.named_modules():
+                    if isinstance(mod, LinearColWise):
+                        #logger.info(f"found {name}")
+                        mod.switch_hot(new_hot_idx=make_hot_idx_n(out_features=mod.out_features, n=mod.hot_idx.numel(), device=mod.W_hot.device), keep_state=True, optimizer=optimizer)
+        logger.info("bucket bytes AFTER:", self.ddp_bucket_bytes(wrapped2))
