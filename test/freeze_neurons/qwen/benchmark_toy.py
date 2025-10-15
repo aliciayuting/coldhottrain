@@ -1,10 +1,12 @@
 import os
 import contextlib
-from typing import Optional, Tuple
-
+from typing import Optional, Tuple, Union, Any
+import typing
 import torch
 from torch import nn
 from torch.cuda import nvtx
+from transformers import TrainerCallback
+from transformers.trainer_callback import TrainerControl, TrainerState
 
 from transformers import (
     AutoModelForCausalLM,
@@ -15,6 +17,7 @@ from transformers import (
 )
 
 from contextlib import contextmanager
+from collections import defaultdict
 
 
 @contextmanager
@@ -25,44 +28,58 @@ def nvtx_range(name: str):
     finally:
         torch.cuda.nvtx.range_pop()
 
-def _register_nvtx_hooks_recursively(root: torch.nn.Module, prefix: str = ""):
+def register_nvtx_hooks(model: torch.nn.Module):
     """
-    Registers forward pre/post hooks on *every* submodule.
-    Each NVTX range name is the fully-qualified path, e.g.:
-      model.layers.0.self_attn.q_proj
-      model.layers.0.input_layernorm
-      model.layers.0.self_attn
-      model.layers.0.mlp.gate_proj
+    Forward: push at pre_hook, pop at post_hook.
+    Backward: push at full_backward_pre_hook, pop at full_backward_hook.
     """
-    # Give each module a stable name
-    for name, module in root.named_children():
-        fqname = f"{prefix}.{name}" if prefix else name
+    for name, module in model.named_modules():
+        if len(list(module.children())) > 0:
+            continue  # only leaf-ish modules to reduce noise; remove this to tag everything
 
-        def pre_hook(mod, inputs, _fq=fqname):
+        fq = name  # fully-qualified path already in named_modules()
+
+        def fpre(_, __, _fq=fq):
             torch.cuda.nvtx.range_push(_fq)
 
-        def post_hook(mod, inputs, output, _fq=fqname):
+        def fpost(_, __, ___, _fq=fq):
             torch.cuda.nvtx.range_pop()
 
-        module.register_forward_pre_hook(pre_hook)
-        module.register_forward_hook(post_hook)
+        def bpre(_, __, _fq=fq):
+            torch.cuda.nvtx.range_push(_fq + " [backward]")
 
-        # Recurse
-        _register_nvtx_hooks_recursively(module, fqname)
+        def bpost(_, __, ___, _fq=fq):
+            torch.cuda.nvtx.range_pop()
 
-def instrument_model_for_nvtx(model: torch.nn.Module):
-    # Put an outer range for the whole model call as well
-    def pre_root(mod, inputs):
-        torch.cuda.nvtx.range_push("MODEL_FORWARD")
+        module.register_forward_pre_hook(fpre)
+        module.register_forward_hook(fpost)
+        # Backward hooks (PyTorch 1.8+)
+        # module.register_full_backward_pre_hook(bpre)
+        # module.register_full_backward_hook(bpost)
 
-    def post_root(mod, inputs, output):
+
+class NVTXOptCallback(TrainerCallback):
+
+    step = 0
+
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        torch.cuda.nvtx.range_push("optimizer_step")
+
+    def on_optimizer_step(self, args, state, control, **kwargs):
         torch.cuda.nvtx.range_pop()
 
-    model.register_forward_pre_hook(pre_root)
-    model.register_forward_hook(post_root)
-    _register_nvtx_hooks_recursively(model)
+
+    def on_step_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        torch.cuda.nvtx.range_push(f"training_step {self.step}")
+        self.step += 1
+
+    def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        torch.cuda.nvtx.range_pop()
+
+
 
 class NVTXTrainer(Trainer):
+
     # Forward: only tag the model's forward/compute_loss region
     def compute_loss(
         self,
@@ -71,24 +88,20 @@ class NVTXTrainer(Trainer):
         return_outputs = False,
         num_items_in_batch = None,
     ):
-        with nvtx.range("forward"):
-            return super().compute_loss(model, inputs, return_outputs)
+        # with torch.autograd.profiler.emit_nvtx():
+            with nvtx.range("forward"):
+                return super().compute_loss(model, inputs, return_outputs)
 
-    # Backward: tag exactly where Trainer performs the backward
-    # def training_step(self, model: Moduleinputs: dictnum_items_in_batch: typing.Optional[torch.Tensor] = None ) -> torch.Tensor:
-    #     with nvtx.range("backward"):
-    #         return super().training_step(loss)
-
-    # # Optimizer step: tag the parameter update (may be bypassed by DeepSpeed)
-    # def optimizer_step(self, *args, **kwargs):
-    #     with nvtx.range("optimizer.step"):
-    #         return super().optimizer_step(*args, **kwargs)
-
-    # # Optional: also tag zero_grad
-    # def optimizer_zero_grad(self, *args, **kwargs):
-    #     with nvtx.range("optimizer.zero_grad"):
-    #         return super().optimizer_zero_grad(*args, **kwargs)
-
+    # # High-level forward + backward wrapper
+    # def training_step(
+    #         self,
+    #         model: nn.Module,
+    #         inputs: dict[str, Union[torch.Tensor, Any]],
+    #         num_items_in_batch: Optional[torch.Tensor] = None,
+    #     ) -> torch.Tensor:
+    #         with torch.cuda.nvtx.range("Traing step"):
+    #             return super().training_step(model, inputs, num_items_in_batch)
+                
 
 
 
@@ -138,8 +151,10 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(model_name)  # do NOT .cuda(); Trainer handles placement
     model.model.layers = model.model.layers[:1]
     model.config.num_hidden_layers = 1
-    instrument_model_for_nvtx(model)
-    
+    # instrument_model_for_nvtx(model)
+    # instrument_model_forward_backward_nvtx(model, only_leaf=True)
+    register_nvtx_hooks(model)
+
     for name, module in model.named_modules():
         print(name, "->", module.__class__.__name__)
 
@@ -167,23 +182,26 @@ def main():
         save_steps=0,
         report_to=[],  # keep console clean
         dataloader_pin_memory=True,
-        max_steps=1,  # keep short while profiling
-        bf16=True if torch.cuda.is_available() else False,
+        max_steps=5,  # keep short while profiling
+        bf16=True if torch.cuda.is_available() else False
         fp16=False,
     )
 
     trainer = NVTXTrainer(
+    # trainer = Trainer(
         model=model,
         args=args,
         train_dataset=train_data,
         tokenizer=tok,
         data_collator=default_data_collator,
+        callbacks=[NVTXOptCallback],
     )
 
+
     # Enable autograd/operator-level NVTX names once for the whole run
-    # with torch.autograd.profiler.emit_nvtx():
-        # trainer.train()
-    trainer.train()
+    with torch.autograd.profiler.emit_nvtx():
+        trainer.train()
+    # trainer.train()
 
 if __name__ == "__main__":
     main()
