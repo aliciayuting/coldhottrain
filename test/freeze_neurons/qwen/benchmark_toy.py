@@ -149,8 +149,9 @@ def main():
         tok.pad_token = tok.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(model_name)  # do NOT .cuda(); Trainer handles placement
-    model.model.layers = model.model.layers[:1]
-    model.config.num_hidden_layers = 1
+    select_n_layers = 2
+    model.model.layers = model.model.layers[:select_n_layers]
+    model.config.num_hidden_layers =  select_n_layers
     # instrument_model_for_nvtx(model)
     # instrument_model_forward_backward_nvtx(model, only_leaf=True)
     register_nvtx_hooks(model)
@@ -183,7 +184,7 @@ def main():
         report_to=[],  # keep console clean
         dataloader_pin_memory=True,
         max_steps=5,  # keep short while profiling
-        bf16=True if torch.cuda.is_available() else False
+        bf16=True if torch.cuda.is_available() else False,
         fp16=False,
     )
 
