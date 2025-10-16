@@ -229,8 +229,8 @@ def main():
         # save_steps=args.save_steps,
         # save_total_limit=2,
         # greater_is_better=True,
-        # fp16=fp16,
-         #bf16=bf16,
+        fp16=fp16,
+         bf16=bf16,
         # report_to="none",
         # seed=args.seed,
     )
