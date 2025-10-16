@@ -1,6 +1,15 @@
 # vram_breakdown_callback.py
 import torch
 from transformers import TrainerCallback
+from collections import defaultdict
+
+def bytes_by_dtype(module):
+    d = defaultdict(int)
+    for p in module.parameters():
+        if p is None: 
+            continue
+        d[str(p.dtype)] += p.numel() * p.element_size()
+    return {k: round(v / 1024**2, 2) for k, v in d.items()}
 
 def _tensor_nbytes(t):
     return 0 if t is None else t.numel() * t.element_size()
@@ -176,3 +185,4 @@ class VramBreakdownCallback(TrainerCallback):
               f"now={log_record['mem/now_allocated_mb']}MB, "
               f"peak={log_record['mem/peak_allocated_mb']}MB,"
               f"reserved={log_record['mem/reserved_mb']}MB")
+        print("Param MB by dtype:", bytes_by_dtype(model))

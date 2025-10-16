@@ -140,11 +140,11 @@ def load_base_model(args, tok, num_labels: int):
             bnb_4bit_compute_dtype=compute_dtype,
         )
         base = AutoModelForSequenceClassification.from_pretrained(
-            args.model_name, config=cfg, quantization_config=bnb_cfg, device_map="auto"
+            args.model_name, config=cfg, quantization_config=bnb_cfg, device_map="auto", torch_dtype=low_dtype
         )
         base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
     else:
-        base = AutoModelForSequenceClassification.from_pretrained(args.model_name, config=cfg)
+        base = AutoModelForSequenceClassification.from_pretrained(args.model_name, config=cfg,torch_dtype=low_dtype)
 
     base.resize_token_embeddings(len(tok))
     base.config.pad_token_id = tok.pad_token_id
