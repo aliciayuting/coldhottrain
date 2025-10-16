@@ -129,13 +129,14 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, default="1linear_efficient", help="Mode for LinearColWise")
     parser.add_argument("--gradient-checkpointing", type=str2bool, default=True, help="Enable gradient checkpointing")
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument("--random-swap-iters", type=int, default=100, help="random_swap_iters for HotSwapCallback")
     args_cmd = parser.parse_args()
     skip_ratio = args_cmd.skip_ratio
     benchmark_time = args_cmd.benchmark_time
     mode = args_cmd.mode
     gradient_checkpointing = args_cmd.gradient_checkpointing
     gradient_accumulation_steps = args_cmd.gradient_accumulation_steps
-
+    random_swap_iters = args_cmd.random_swap_iters
     print(f"model= {MODEL}, skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}, mode = {mode}, gradient_checkpointing = {gradient_checkpointing}, gradient_accumulation_steps = {gradient_accumulation_steps}")
 
 
@@ -161,7 +162,7 @@ if __name__ == "__main__":
         learning_rate=2e-5,
         # fp16=True,
         bf16=True,
-        logging_steps=10,
+        logging_steps=50,
         save_strategy="epoch",
         # save_strategy="no",
         eval_strategy="steps",
@@ -294,9 +295,9 @@ if __name__ == "__main__":
         callbacks=[time_callback] if benchmark_time else [],
     )
 
-    wrapped_model = trainer.model_wrapped
-    r = wrapped_model.reducer
-    print("Initial DDP bucket bytes:", sum(b.buffer().numel() * b.buffer().element_size() for b in r._buckets))
+    # wrapped_model = trainer.model_wrapped
+    # r = wrapped_model.reducer
+    # print("Initial DDP bucket bytes:", sum(b.buffer().numel() * b.buffer().element_size() for b in r._buckets))
 
 
 
@@ -346,7 +347,7 @@ if __name__ == "__main__":
     trainer.add_callback(ram_cb)
     
 
-    hotswap_cb = HotSwapCallback()
+    hotswap_cb = HotSwapCallback(swap_iters=random_swap_iters)
     trainer.add_callback(hotswap_cb)
 
     print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")

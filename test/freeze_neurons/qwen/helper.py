@@ -131,6 +131,7 @@ def tensor_sha256(t: torch.Tensor) -> str:
     tb = t.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
     return hashlib.sha256(tb).hexdigest()
 
+@torch.no_grad()
 def model_weights_checksum(model):
     """Return ordered list of (name, sha256) for params + buffers."""
     checks = []
@@ -141,6 +142,7 @@ def model_weights_checksum(model):
     checks.sort(key=lambda x: x[0])
     return checks
 
+@torch.no_grad()
 def verify_weights_across_ranks(model):
     """Assert params/buffers are bit-identical across ranks."""
     world = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
