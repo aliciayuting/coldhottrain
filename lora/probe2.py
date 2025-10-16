@@ -5,11 +5,30 @@ from transformers import TrainerCallback
 def _tensor_nbytes(t):
     return 0 if t is None else t.numel() * t.element_size()
 
+
+def _unique_params(module):
+    seen = set()
+    for p in module.parameters():
+        pid = id(p)
+        if pid not in seen:
+            seen.add(pid)
+            yield p
+
 def _model_param_bytes(model):
-    return sum(_tensor_nbytes(p) for p in model.parameters())
+    return sum(_tensor_nbytes(p) for p in _unique_params(model))
+
+# def _model_buffer_bytes(model):
+#     return sum(_tensor_nbytes(b) for b in model.buffers())
 
 def _model_buffer_bytes(model):
-    return sum(_tensor_nbytes(b) for b in model.buffers())
+    seen = set()
+    total = 0
+    for b in model.buffers():
+        bid = id(b)
+        if bid not in seen:
+            seen.add(bid)
+            total += _tensor_nbytes(b)
+    return total
 
 def _grad_bytes(model):
     return sum(_tensor_nbytes(p.grad) for p in model.parameters() if getattr(p, "grad", None) is not None)
