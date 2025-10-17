@@ -12,6 +12,8 @@ import os
 import argparse
 from typing import Dict, Any
 import numpy as np
+from torch.utils.data import DataLoader
+
 
 import torch
 from datasets import load_dataset
@@ -107,13 +109,6 @@ def make_compute_metrics(task: str):
         predictions = np.argmax(logits, axis=-1)
         accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
         return accuracy 
-        # preds = eval_pred.predictions
-        # if isinstance(preds, tuple):
-        #     preds = preds[0]
-        # y_pred = preds.argmax(axis=-1)
-        # y_true = eval_pred.label_ids
-        # return accuracy_metric.compute(predictions=y_pred, references=y_true)
-
     return compute_metrics
 
 # ---------- Model init (with optional QLoRA) ----------
@@ -177,6 +172,7 @@ def main():
     args = parse_args()
     # torch.manual_seed(args.seed)
     SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # SCRATCH_PREFIX = "./"
     # ensure output_dir always lives under this directory
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
@@ -188,7 +184,9 @@ def main():
     num_labels = get_num_labels(args.task_name)
 
     tok_fn, remove_cols = tokenizers_for_task(args.task_name, tok, args.max_len)
-    ds_tok = ds.map(tok_fn, batched=True)
+    ds_tok = ds.map(tok_fn, batched=False)
+    print(ds_tok)
+    print(ds["train"].features["label"]) 
     if "label" in ds_tok["train"].column_names:
         ds_tok = ds_tok.rename_column("label", "labels")
     # Keep label + model inputs only (HF Trainer handles "label")
@@ -200,7 +198,6 @@ def main():
     if args.task_name == "mnli":
         eval_split = "validation_matched"
         eval_dataset = ds_tok[eval_split]
-        # (You could also evaluate mismatched separately if desired)
     else:
         eval_dataset = ds_tok["validation"]
     train_dataset = ds_tok["train"]
@@ -212,6 +209,8 @@ def main():
     # Model
     base = load_base_model(args, tok, num_labels)
     model = wrap_with_lora(base, args)
+
+   
 
     # Precision
     use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
