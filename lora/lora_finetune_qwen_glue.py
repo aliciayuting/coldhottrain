@@ -3,8 +3,8 @@
 
 '''
 python3 lora_finetune_qwen_glue.py \
-  --task_name sst2 \
-  --output_dir qwen25_sst2_lora_adapter \
+  --task_name mnli \
+  --output_dir qwen25_mnli_lora_adapter \
   --lora_r 8
 '''
 
@@ -176,6 +176,11 @@ def wrap_with_lora(base, args):
 def main():
     args = parse_args()
     # torch.manual_seed(args.seed)
+    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # ensure output_dir always lives under this directory
+    if not args.output_dir.startswith(SCRATCH_PREFIX):
+        args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # Data
     tok = build_tokenizer(args.model_name)
