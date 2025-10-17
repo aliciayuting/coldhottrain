@@ -2,6 +2,7 @@
 import torch
 from transformers import TrainerCallback
 from collections import defaultdict
+import os
 
 def bytes_by_dtype(module):
     d = defaultdict(int)
