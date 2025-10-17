@@ -125,6 +125,7 @@ def load_base_model(args, tok, num_labels: int):
     )
 
     use_qlora = str2bool(args.use_qlora) if isinstance(args.use_qlora, str) else args.use_qlora
+    low_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8) else torch.float16
 
     if use_qlora:
         from transformers import BitsAndBytesConfig
