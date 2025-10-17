@@ -161,6 +161,7 @@ class VramBreakdownCallback(TrainerCallback):
             act_bytes_est = max(0, self._post_fwd_alloc - self._pre_fwd_alloc)
 
         log_record = {
+            "next_global_step":next_global_step,
             "mem/params_mb": _fmt_mb(p_bytes),
             "mem/buffers_mb": _fmt_mb(b_bytes),
             "mem/grads_mb": _fmt_mb(g_bytes),
@@ -185,4 +186,16 @@ class VramBreakdownCallback(TrainerCallback):
               f"now={log_record['mem/now_allocated_mb']}MB, "
               f"peak={log_record['mem/peak_allocated_mb']}MB,"
               f"reserved={log_record['mem/reserved_mb']}MB")
-        print("Param MB by dtype:", bytes_by_dtype(model))
+
+        WRITE_INTERVAL = 100  # every 100 steps
+        if next_global_step % WRITE_INTERVAL == 0:
+            os.makedirs(args.output_dir, exist_ok=True)
+            path = os.path.join(args.output_dir, "vram_log.csv")
+
+            if not os.path.exists(path):
+                # write header once
+                with open(path, "w") as f:
+                    f.write(",".join(log_record.keys()) + "\n")
+
+            with open(path, "a") as f:
+                f.write(",".join(str(v) for v in log_record.values()) + "\n")
