@@ -4,7 +4,8 @@
 '''
 python3 lora_finetune_qwen_glue.py \
   --task_name sst2 \
-  --output_dir qwen25_sst2_lora_adapter 
+  --output_dir qwen25_sst2_lora_adapter \
+  --lora_r 8
 '''
 
 import os
