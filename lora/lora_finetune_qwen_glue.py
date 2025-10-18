@@ -65,7 +65,7 @@ def parse_args():
 
     # LoRA hyperparams
     p.add_argument("--lora_r", type=int, default=8)
-    p.add_argument("--lora_alpha", type=float, default=16)
+    p.add_argument("--lora_alpha", type=float, default=32)
     p.add_argument("--lora_dropout", type=float, default=0) #0.05
 
     # Mixed precision
@@ -84,7 +84,7 @@ def build_tokenizer(model_name: str):
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    tok.padding_side = "right"
+    tok.padding_side = "left"
     return tok
 
 def tokenizers_for_task(task: str, tok, max_len: int):
@@ -160,7 +160,9 @@ def wrap_with_lora(base, args):
         lora_dropout=args.lora_dropout,
         bias="none",
         task_type="SEQ_CLS",
+        random_sate=3407,
         target_modules=target_modules,
+        modules_to_save=["score"]  # or ["classifier"] depending on model
     )
     model = get_peft_model(base, lora_cfg)
     # Show trainable params for sanity
@@ -171,8 +173,8 @@ def wrap_with_lora(base, args):
 def main():
     args = parse_args()
     # torch.manual_seed(args.seed)
-    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
-    # SCRATCH_PREFIX = "./"
+    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    SCRATCH_PREFIX = "./"
     # ensure output_dir always lives under this directory
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
@@ -185,8 +187,7 @@ def main():
 
     tok_fn, remove_cols = tokenizers_for_task(args.task_name, tok, args.max_len)
     ds_tok = ds.map(tok_fn, batched=False)
-    print(ds_tok)
-    print(ds["train"].features["label"]) 
+
     if "label" in ds_tok["train"].column_names:
         ds_tok = ds_tok.rename_column("label", "labels")
     # Keep label + model inputs only (HF Trainer handles "label")
@@ -210,13 +211,20 @@ def main():
     base = load_base_model(args, tok, num_labels)
     model = wrap_with_lora(base, args)
 
-   
+    model.print_trainable_parameters()  # sanity count
 
+    # Inspect the classifier head’s grad status and stats
+    for n, p in model.named_parameters():
+        if "score" in n or "classifier" in n:
+            print(n, "requires_grad=", p.requires_grad,
+                "mean=", p.data.float().mean().item(),
+                "std=",  p.data.float().std().item())
     # Precision
     use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
-    fp16 = args.fp16 or (not args.bf16 and not use_bf16_hw)  # default to fp16 on older GPUs
+    fp16 = args.fp16   # default to fp16 on older GPUs
     bf16 = args.bf16 or (use_bf16_hw and not args.fp16)
-
+    print(f"fp16 is {fp16}")
+    print(f"bf16 is {bf16}")
     # TrainingArguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
