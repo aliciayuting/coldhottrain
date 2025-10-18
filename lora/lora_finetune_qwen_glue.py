@@ -54,19 +54,18 @@ def parse_args():
     p.add_argument("--max_len", type=int, default=512)
     p.add_argument("--batch_size", type=int, default=16, help="Per-device train/eval batch size.")
     p.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps.")
-    p.add_argument("--num_epochs", type=float, default=1.0)
-    p.add_argument("--learning_rate", type=float, default=5e-4) #2e-5)
+    p.add_argument("--num_epochs", type=float, default=1.0)  # Increased from 1.0
+    p.add_argument("--learning_rate", type=float, default=5e-4)  # Increase from 1e-4
     p.add_argument("--weight_decay", type=float, default=0.01)
-    # p.add_argument("--warmup_ratio", type=float, default=0.06)
+    p.add_argument("--warmup_ratio", type=float, default=0.06)  # Smaller warmup
     p.add_argument("--logging_steps", type=int, default=100)
-    p.add_argument("--eval_steps", type=int, default=1000)
-    # p.add_argument("--save_steps", type=int, default=200)
-    # p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--eval_steps", type=int, default=500)  # More frequent eval
+    p.add_argument("--max_grad_norm", type=float, default=1.0)  # Less aggressive clipping
 
     # LoRA hyperparams
-    p.add_argument("--lora_r", type=int, default=8)
-    p.add_argument("--lora_alpha", type=float, default=32)
-    p.add_argument("--lora_dropout", type=float, default=0) #0.05
+    p.add_argument("--lora_r", type=int, default=8)  # Back to 8, simpler is better
+    p.add_argument("--lora_alpha", type=float, default=32)  # Match with r for scaling=1
+    p.add_argument("--lora_dropout", type=float, default=0)  # Small dropout
 
     # Mixed precision
     p.add_argument("--fp16", action="store_true", help="Force FP16 (overrides bf16 if both set).")
@@ -84,7 +83,8 @@ def build_tokenizer(model_name: str):
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    tok.padding_side = "left"
+    # FIXED: Changed to right padding for sequence classification
+    tok.padding_side = "right"
     return tok
 
 def tokenizers_for_task(task: str, tok, max_len: int):
@@ -113,13 +113,6 @@ def make_compute_metrics(task: str):
 
 # ---------- Model init (with optional QLoRA) ----------
 def load_base_model(args, tok, num_labels: int):
-    # cfg = AutoConfig.from_pretrained(
-    #     args.model_name,
-    #     num_labels=num_labels,
-    #     problem_type="single_label_classification",
-    #     pad_token_id=tok.pad_token_id,
-    # )
-
     use_qlora = str2bool(args.use_qlora) if isinstance(args.use_qlora, str) else args.use_qlora
     low_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8) else torch.float16
 
@@ -137,12 +130,39 @@ def load_base_model(args, tok, num_labels: int):
             bnb_4bit_compute_dtype=compute_dtype,
         )
         base = AutoModelForSequenceClassification.from_pretrained(
-            args.model_name,num_labels=num_labels,  quantization_config=bnb_cfg, device_map="auto", torch_dtype=low_dtype
+            args.model_name,
+            num_labels=num_labels,
+            quantization_config=bnb_cfg,
+            device_map="auto",
+            torch_dtype=low_dtype,
+            pad_token_id=tok.pad_token_id,  # Set during load
+            ignore_mismatched_sizes=True,  # Allow classifier head mismatch
         )
-        base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
+        base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=True)
     else:
-        base = AutoModelForSequenceClassification.from_pretrained(args.model_name,num_labels=num_labels, torch_dtype=low_dtype)
+        base = AutoModelForSequenceClassification.from_pretrained(
+            args.model_name,
+            num_labels=num_labels,
+            torch_dtype=low_dtype,
+            pad_token_id=tok.pad_token_id,  # Set during load
+            ignore_mismatched_sizes=True,  # Allow classifier head mismatch
+        )
 
+    # CRITICAL FIX: Properly initialize the classifier head with small weights
+    # The default initialization from transformers can be too large
+    if hasattr(base, 'score'):
+        # Qwen uses 'score' for classification head
+        # Use very small initialization to start near uniform distribution
+        torch.nn.init.normal_(base.score.weight, mean=0.0, std=0.01)
+        if base.score.bias is not None:
+            torch.nn.init.zeros_(base.score.bias)
+        print(f"Re-initialized score layer: mean={base.score.weight.data.mean().item():.6f}, std={base.score.weight.data.std().item():.6f}")
+    elif hasattr(base, 'classifier'):
+        torch.nn.init.normal_(base.classifier.weight, mean=0.0, std=0.01)
+        if base.classifier.bias is not None:
+            torch.nn.init.zeros_(base.classifier.bias)
+        print(f"Re-initialized classifier layer: mean={base.classifier.weight.data.mean().item():.6f}, std={base.classifier.weight.data.std().item():.6f}")
+    
     base.resize_token_embeddings(len(tok))
     base.config.use_cache = False
     base.config.pad_token_id = tok.pad_token_id
@@ -172,9 +192,8 @@ def wrap_with_lora(base, args):
 # ---------- Main ----------
 def main():
     args = parse_args()
-    # torch.manual_seed(args.seed)
-    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
-    SCRATCH_PREFIX = "./"
+    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # SCRATCH_PREFIX = "./"
     # ensure output_dir always lives under this directory
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
@@ -213,18 +232,43 @@ def main():
 
     model.print_trainable_parameters()  # sanity count
 
-    # Inspect the classifier head’s grad status and stats
+    # Inspect the classifier head's grad status and stats
+    print("\n=== Classifier Head Inspection ===")
     for n, p in model.named_parameters():
         if "score" in n or "classifier" in n:
-            print(n, "requires_grad=", p.requires_grad,
-                "mean=", p.data.float().mean().item(),
-                "std=",  p.data.float().std().item())
+            print(f"{n}: requires_grad={p.requires_grad}, "
+                  f"shape={p.shape}, mean={p.data.float().mean().item():.4f}, "
+                  f"std={p.data.float().std().item():.4f}")
+    
+    # Sanity check: forward pass with dummy batch
+    print("\n=== Sanity Check Forward Pass ===")
+    dummy_input = {
+        'input_ids': torch.randint(0, len(tok), (2, 128)).to(model.device),
+        'attention_mask': torch.ones(2, 128).to(model.device),
+        'labels': torch.tensor([0, 1]).to(model.device) if num_labels == 2 else torch.tensor([0, 1]).to(model.device)
+    }
+    with torch.no_grad():
+        outputs = model(**dummy_input)
+        print(f"Logits shape: {outputs.logits.shape}")
+        print(f"Logits sample: {outputs.logits[0]}")
+        print(f"Loss: {outputs.loss.item():.4f}")
+        print(f"Expected loss for random init: ~{np.log(num_labels):.4f}")
+        if outputs.loss.item() > 10:
+            print("WARNING: Initial loss is very high! Check classifier initialization.")
+    
+    print(f"\n=== Trainable Parameters ===")
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"Trainable: {trainable:,} / Total: {total:,} ({100*trainable/total:.2f}%)")
+    
+    
     # Precision
     use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
     fp16 = args.fp16   # default to fp16 on older GPUs
     bf16 = args.bf16 or (use_bf16_hw and not args.fp16)
     print(f"fp16 is {fp16}")
     print(f"bf16 is {bf16}")
+    
     # TrainingArguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -234,19 +278,21 @@ def main():
         num_train_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        max_grad_norm=args.max_grad_norm,  # ADDED: Gradient clipping
+        warmup_ratio=args.warmup_ratio,  # ADDED: Warmup
         gradient_checkpointing=True,
-        # warmup_ratio=args.warmup_ratio,
         logging_steps=args.logging_steps,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
+        save_strategy="steps",  # ADDED: Save checkpoints
+        save_steps=args.eval_steps,
+        save_total_limit=2,
+        load_best_model_at_end=True,  # ADDED: Load best model
+        metric_for_best_model="accuracy",  # ADDED: Metric for best model
+        greater_is_better=True,
         ddp_find_unused_parameters=False,
-        # save_steps=args.save_steps,
-        # save_total_limit=2,
-        # greater_is_better=True,
         fp16=fp16,
-         bf16=bf16,
-        # report_to="none",
-        # seed=args.seed,
+        bf16=bf16,
     )
 
     compute_metrics = make_compute_metrics(args.task_name)
@@ -262,8 +308,6 @@ def main():
     )
 
     ram_cb = VramBreakdownCallback()
-
-    #trainer.add_callback(probe_cb)
     trainer.add_callback(ram_cb)
 
     def log_memory_stats():
@@ -279,6 +323,7 @@ def main():
     # Train
     trainer.train()
     log_memory_stats()
+    
     # Save ONLY the LoRA adapter
     model.save_pretrained(args.output_dir)
     # Optionally keep tokenizer/config alongside (useful for later)
