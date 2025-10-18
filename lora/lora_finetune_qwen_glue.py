@@ -303,7 +303,7 @@ def main():
     
     # Precision
     use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
-    fp16 = args.fp16   # default to fp16 on older GPUs
+    fp16 = args.fp16 or (not args.bf16 and not use_bf16_hw)  # default to fp16 on older GPUs
     bf16 = args.bf16 or (use_bf16_hw and not args.fp16)
     print(f"fp16 is {fp16}")
     print(f"bf16 is {bf16}")
