@@ -15,7 +15,13 @@ import argparse
 from typing import Dict, Any
 import numpy as np
 from torch.utils.data import DataLoader
+from probe2 import *
+import logging 
 
+logging.basicConfig(
+        level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
+        format="[%(levelname)s] %(message)s"
+    )
 
 import torch
 from datasets import load_dataset
@@ -116,26 +122,17 @@ def tokenize_dataset(task: str, tok, ds, max_len: int):
 # ---------- Metrics ----------
 def make_compute_metrics(task: str):
     accuracy_metric = evaluate.load("accuracy")
-    
-    if task == "mnli":
-        # For MNLI, also track matched/mismatched separately if needed
-        def compute_metrics(eval_pred):
-            logits, labels = eval_pred
-            predictions = np.argmax(logits, axis=-1)
-            return accuracy_metric.compute(predictions=predictions, references=labels)
-    else:
-        def compute_metrics(eval_pred):
-            logits, labels = eval_pred
-            predictions = np.argmax(logits, axis=-1)
-            return accuracy_metric.compute(predictions=predictions, references=labels)
-    
+    def compute_metrics(eval_pred):
+        logits, labels = eval_pred
+        predictions = np.argmax(logits, axis=-1)
+        accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+        return accuracy 
     return compute_metrics
 
 # ---------- Model init (with optional QLoRA) ----------
 def load_base_model(args, tok, num_labels: int):
     use_qlora = str2bool(args.use_qlora) if isinstance(args.use_qlora, str) else args.use_qlora
     
-    # FIX: Don't force float32, use appropriate dtype
     if use_qlora:
         from transformers import BitsAndBytesConfig
         compute_dtype = (
@@ -197,6 +194,7 @@ def load_base_model(args, tok, num_labels: int):
         if base.classifier.bias is not None:
             torch.nn.init.zeros_(base.classifier.bias)
         
+        # Verify initialization
         with torch.no_grad():
             weight_std = base.classifier.weight.std().item()
             weight_mean = base.classifier.weight.mean().item()
@@ -263,8 +261,8 @@ def wrap_with_lora(base, args, num_labels):
 # ---------- Main ----------
 def main():
     args = parse_args()
-    # SCRATCH_PREFIX = "./"
-    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    SCRATCH_PREFIX = "./"
+    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
@@ -277,7 +275,6 @@ def main():
     logging.info(f"Task: {args.task_name}, Num labels: {num_labels}")
     logging.info(f"Train samples: {len(ds['train'])}")
 
-    # FIX: Use batched tokenization
     ds_tok = tokenize_dataset(args.task_name, tok, ds, args.max_len)
 
     # Splits
@@ -372,39 +369,39 @@ def main():
         'labels': torch.tensor([0, 1, 2, 0] if num_labels == 3 else [0, 1, 0, 1]).to(model.device)
     }
     
-    # Check for NaN in model parameters before training
-    nan_found = False
-    for name, param in model.named_parameters():
-        if torch.isnan(param).any():
-            logging.error(f"❌ NaN found in parameter: {name}")
-            nan_found = True
-    if nan_found:
-        raise RuntimeError("Model has NaN parameters before training!")
+    # # Check for NaN in model parameters before training
+    # nan_found = False
+    # for name, param in model.named_parameters():
+    #     if torch.isnan(param).any():
+    #         logging.error(f"❌ NaN found in parameter: {name}")
+    #         nan_found = True
+    # if nan_found:
+    #     raise RuntimeError("Model has NaN parameters before training!")
     
-    with torch.no_grad():
-        outputs = model(**dummy_input)
-        expected_loss = np.log(num_labels)
-        logging.info(f"Initial loss: {outputs.loss.item():.4f} (expected ~{expected_loss:.4f})")
-        logging.info(f"Logits sample: {outputs.logits[0].cpu().tolist()}")
-        logit_std = outputs.logits.std().item()
-        logit_max = outputs.logits.abs().max().item()
-        logging.info(f"Logit std: {logit_std:.4f}, max_abs: {logit_max:.4f}")
+    # with torch.no_grad():
+    #     outputs = model(**dummy_input)
+    #     expected_loss = np.log(num_labels)
+    #     logging.info(f"Initial loss: {outputs.loss.item():.4f} (expected ~{expected_loss:.4f})")
+    #     logging.info(f"Logits sample: {outputs.logits[0].cpu().tolist()}")
+    #     logit_std = outputs.logits.std().item()
+    #     logit_max = outputs.logits.abs().max().item()
+    #     logging.info(f"Logit std: {logit_std:.4f}, max_abs: {logit_max:.4f}")
         
-        if torch.isnan(outputs.loss):
-            raise RuntimeError("❌ Initial loss is NaN! Check model initialization.")
-        if logit_max > 10.0:
-            logging.error(f"❌ Logits too large ({logit_max:.2f})! Will cause overflow.")
-            raise RuntimeError("Logits too large - reinitialize classifier with smaller std!")
+    #     if torch.isnan(outputs.loss):
+    #         raise RuntimeError("❌ Initial loss is NaN! Check model initialization.")
+    #     if logit_max > 10.0:
+    #         logging.error(f"❌ Logits too large ({logit_max:.2f})! Will cause overflow.")
+    #         raise RuntimeError("Logits too large - reinitialize classifier with smaller std!")
         
-        if abs(outputs.loss.item() - expected_loss) > 0.5:
-            logging.warning(f"⚠️  Initial loss is far from expected! Logit std={logit_std:.4f}")
-            if logit_std > 1.0:
-                logging.warning("⚠️  Logits have high variance - may cause instability!")
+    #     if abs(outputs.loss.item() - expected_loss) > 0.5:
+    #         logging.warning(f"⚠️  Initial loss is far from expected! Logit std={logit_std:.4f}")
+    #         if logit_std > 1.0:
+    #             logging.warning("⚠️  Logits have high variance - may cause instability!")
     
-    # Verify trainable parameters
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in model.parameters())
-    logging.info(f"Trainable: {trainable:,} / Total: {total:,} ({100*trainable/total:.2f}%)")
+    # # Verify trainable parameters
+    # trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # total = sum(p.numel() for p in model.parameters())
+    # logging.info(f"Trainable: {trainable:,} / Total: {total:,} ({100*trainable/total:.2f}%)")
     
     # Precision - CRITICAL: Must use mixed precision with gradient checkpointing
     use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
@@ -467,6 +464,18 @@ def main():
         data_collator=collator,
         compute_metrics=compute_metrics,
     )
+    ram_cb = VramBreakdownCallback()
+    trainer.add_callback(ram_cb)
+
+    def log_memory_stats():
+        """Log current GPU memory statistics"""
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**2
+        reserved = torch.cuda.memory_reserved() / 1024**2
+        
+        logging.info(f"GPU Memory - Allocated: {allocated:.2f} MB, Max Allocated: {max_allocated:.2f} MB, Reserved: {reserved:.2f} MB")
+
+    log_memory_stats()
 
     # Train
     logging.info("\n=== Starting Training ===")

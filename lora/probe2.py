@@ -1,44 +1,15 @@
 # vram_breakdown_callback.py
 import torch
 from transformers import TrainerCallback
-from collections import defaultdict
-import os
-
-def bytes_by_dtype(module):
-    d = defaultdict(int)
-    for p in module.parameters():
-        if p is None: 
-            continue
-        d[str(p.dtype)] += p.numel() * p.element_size()
-    return {k: round(v / 1024**2, 2) for k, v in d.items()}
 
 def _tensor_nbytes(t):
     return 0 if t is None else t.numel() * t.element_size()
 
-
-def _unique_params(module):
-    seen = set()
-    for p in module.parameters():
-        pid = id(p)
-        if pid not in seen:
-            seen.add(pid)
-            yield p
-
 def _model_param_bytes(model):
-    return sum(_tensor_nbytes(p) for p in _unique_params(model))
-
-# def _model_buffer_bytes(model):
-#     return sum(_tensor_nbytes(b) for b in model.buffers())
+    return sum(_tensor_nbytes(p) for p in model.parameters())
 
 def _model_buffer_bytes(model):
-    seen = set()
-    total = 0
-    for b in model.buffers():
-        bid = id(b)
-        if bid not in seen:
-            seen.add(bid)
-            total += _tensor_nbytes(b)
-    return total
+    return sum(_tensor_nbytes(b) for b in model.buffers())
 
 def _grad_bytes(model):
     return sum(_tensor_nbytes(p.grad) for p in model.parameters() if getattr(p, "grad", None) is not None)
@@ -162,7 +133,6 @@ class VramBreakdownCallback(TrainerCallback):
             act_bytes_est = max(0, self._post_fwd_alloc - self._pre_fwd_alloc)
 
         log_record = {
-            "next_global_step":next_global_step,
             "mem/params_mb": _fmt_mb(p_bytes),
             "mem/buffers_mb": _fmt_mb(b_bytes),
             "mem/grads_mb": _fmt_mb(g_bytes),
@@ -187,16 +157,3 @@ class VramBreakdownCallback(TrainerCallback):
               f"now={log_record['mem/now_allocated_mb']}MB, "
               f"peak={log_record['mem/peak_allocated_mb']}MB,"
               f"reserved={log_record['mem/reserved_mb']}MB")
-
-        WRITE_INTERVAL = 100  # every 100 steps
-        if next_global_step % WRITE_INTERVAL == 0:
-            os.makedirs(args.output_dir, exist_ok=True)
-            path = os.path.join(args.output_dir, "vram_log.csv")
-
-            if not os.path.exists(path):
-                # write header once
-                with open(path, "w") as f:
-                    f.write(",".join(log_record.keys()) + "\n")
-
-            with open(path, "a") as f:
-                f.write(",".join(str(v) for v in log_record.values()) + "\n")
