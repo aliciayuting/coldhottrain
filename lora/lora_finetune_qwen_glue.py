@@ -173,8 +173,8 @@ def wrap_with_lora(base, args):
 def main():
     args = parse_args()
     # torch.manual_seed(args.seed)
-    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
-    SCRATCH_PREFIX = "./"
+    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # SCRATCH_PREFIX = "./"
     # ensure output_dir always lives under this directory
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
