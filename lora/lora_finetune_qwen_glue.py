@@ -55,11 +55,11 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=16, help="Per-device train/eval batch size.")
     p.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps.")
     p.add_argument("--num_epochs", type=float, default=1.0)
-    p.add_argument("--learning_rate", type=float, default=2e-5)
+    p.add_argument("--learning_rate", type=float, default=5e-4) #2e-5)
     p.add_argument("--weight_decay", type=float, default=0.01)
     # p.add_argument("--warmup_ratio", type=float, default=0.06)
-    p.add_argument("--logging_steps", type=int, default=10)
-    p.add_argument("--eval_steps", type=int, default=500)
+    p.add_argument("--logging_steps", type=int, default=100)
+    p.add_argument("--eval_steps", type=int, default=1000)
     # p.add_argument("--save_steps", type=int, default=200)
     # p.add_argument("--seed", type=int, default=42)
 
@@ -113,12 +113,12 @@ def make_compute_metrics(task: str):
 
 # ---------- Model init (with optional QLoRA) ----------
 def load_base_model(args, tok, num_labels: int):
-    cfg = AutoConfig.from_pretrained(
-        args.model_name,
-        num_labels=num_labels,
-        problem_type="single_label_classification",
-        pad_token_id=tok.pad_token_id,
-    )
+    # cfg = AutoConfig.from_pretrained(
+    #     args.model_name,
+    #     num_labels=num_labels,
+    #     problem_type="single_label_classification",
+    #     pad_token_id=tok.pad_token_id,
+    # )
 
     use_qlora = str2bool(args.use_qlora) if isinstance(args.use_qlora, str) else args.use_qlora
     low_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8) else torch.float16
@@ -137,13 +137,14 @@ def load_base_model(args, tok, num_labels: int):
             bnb_4bit_compute_dtype=compute_dtype,
         )
         base = AutoModelForSequenceClassification.from_pretrained(
-            args.model_name, config=cfg, quantization_config=bnb_cfg, device_map="auto", torch_dtype=low_dtype
+            args.model_name,num_labels=num_labels,  quantization_config=bnb_cfg, device_map="auto", torch_dtype=low_dtype
         )
         base = prepare_model_for_kbit_training(base, use_gradient_checkpointing=False)
     else:
-        base = AutoModelForSequenceClassification.from_pretrained(args.model_name, config=cfg,torch_dtype=low_dtype)
+        base = AutoModelForSequenceClassification.from_pretrained(args.model_name,num_labels=num_labels, torch_dtype=low_dtype)
 
     base.resize_token_embeddings(len(tok))
+    base.config.use_cache = False
     base.config.pad_token_id = tok.pad_token_id
     if getattr(base, "generation_config", None) is not None:
         base.generation_config.pad_token_id = tok.pad_token_id
@@ -160,7 +161,6 @@ def wrap_with_lora(base, args):
         lora_dropout=args.lora_dropout,
         bias="none",
         task_type="SEQ_CLS",
-        random_sate=3407,
         target_modules=target_modules,
         modules_to_save=["score"]  # or ["classifier"] depending on model
     )
@@ -173,8 +173,8 @@ def wrap_with_lora(base, args):
 def main():
     args = parse_args()
     # torch.manual_seed(args.seed)
-    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
-    # SCRATCH_PREFIX = "./"
+    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    SCRATCH_PREFIX = "./"
     # ensure output_dir always lives under this directory
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
