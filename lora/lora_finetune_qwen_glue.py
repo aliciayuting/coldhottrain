@@ -365,6 +365,13 @@ def main():
 
     # Train
     trainer.train()
+
+    print("\n=== CHECKING TRAINABLE PARAMETERS ===")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"✓ Trainable: {name}, shape={param.shape}")
+            if 'score' in name:
+                print(f"  → CLASSIFIER FOUND: mean={param.data.mean():.6f}, std={param.data.std():.6f}")
     log_memory_stats()
     
     # Save ONLY the LoRA adapter
