@@ -203,7 +203,9 @@ if __name__ == "__main__":
     
     # print(f"Output dir: {output_dir}")
     # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{skip_ratio}"
-    output_dir = f"/mnt/coldhot/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+    # output_dir = f"/mnt/coldhot/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+    output_dir = f"/home/ubuntu/run/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
+
     os.makedirs(output_dir, exist_ok=True)
 
     weight_out_dir = f"{output_dir}/weight_dump"
@@ -211,8 +213,8 @@ if __name__ == "__main__":
     args = TrainingArguments(
         output_dir=f"{output_dir}/ckpt",
         logging_dir=f"{output_dir}/logs",
-        per_device_train_batch_size=1,
-        per_device_eval_batch_size=1,
+        per_device_train_batch_size=128,
+        per_device_eval_batch_size=128,
         gradient_accumulation_steps=1,
         # gradient_accumulation_steps=1,
         num_train_epochs=NUM_EPOCHS,
@@ -253,6 +255,45 @@ if __name__ == "__main__":
     select_n_layers = 1
     model.model.layers = model.model.layers[:select_n_layers]
     model.config.num_hidden_layers =  select_n_layers
+
+    if skip_ratio > 0.0:
+        print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
+
+        layers = get_decoder_layers(model)   # <-- the fix
+        for i, layer in enumerate(layers):
+            print(f"## Processing layer {i+1}/{len(layers)}")
+            mapping = {
+                "self_attn.q_proj": layer.self_attn.q_proj,
+                "self_attn.k_proj": layer.self_attn.k_proj,
+                "self_attn.v_proj": layer.self_attn.v_proj,
+                "self_attn.o_proj": layer.self_attn.o_proj,
+                "mlp.up_proj":      layer.mlp.up_proj,
+                "mlp.down_proj":    layer.mlp.down_proj,
+                "mlp.gate_proj": layer.mlp.gate_proj,
+            }
+            
+
+
+            for name, linear in mapping.items():
+                assert isinstance(linear, nn.Linear), f"{name} expected nn.Linear, got {type(linear)}"
+                # print(f"Processing {name}: {tuple(linear.weight.shape)}")
+                out_features = linear.out_features
+                # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
+                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                wrapped = replace_linear_with_colwise(linear, hot_idx)
+                if name.startswith("self_attn."):
+                    setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
+                else:
+                    setattr(layer.mlp,       name.split(".", 1)[1], wrapped)
+                print(f"Replaced {name} with LinearColWise")
+
+            # # quick sanity check
+            # print(type(layer.self_attn.q_proj), layer.self_attn.q_proj.W_hot.shape, layer.self_attn.q_proj.W_cold.shape)
+            # print(type(layer.mlp.up_proj),      layer.mlp.up_proj.W_hot.shape,      layer.mlp.up_proj.W_cold.shape)
+
+    else:
+        print("SKIP is set to False, not replacing linear layers with LinearColWise.")
+
     # instrument_model_for_nvtx(model)
     # instrument_model_forward_backward_nvtx(model, only_leaf=True)
     register_nvtx_hooks(model)
@@ -272,46 +313,7 @@ if __name__ == "__main__":
         print("kv_proj_out:", (getattr(cfg, "num_key_value_heads", 2) * (cfg.hidden_size // cfg.num_attention_heads)))  # 128
         print("num_layers: ", model.config.num_hidden_layers)
 
-
-    # if skip_ratio > 0.0:
-    #     print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
-
-    #     layers = get_decoder_layers(model)   # <-- the fix
-    #     layer_idx = 23
-    #     for i, layer in enumerate(layers):
-                
-    #         mapping = {
-    #             "self_attn.q_proj": layer.self_attn.q_proj,
-    #             "self_attn.k_proj": layer.self_attn.k_proj,
-    #             "self_attn.v_proj": layer.self_attn.v_proj,
-    #             "self_attn.o_proj": layer.self_attn.o_proj,
-    #             "mlp.up_proj":      layer.mlp.up_proj,
-    #             "mlp.down_proj":    layer.mlp.down_proj,
-    #             # "mlp.gate_proj": layer.mlp.gate_proj,
-    #         }
-            
-
-
-    #         for name, linear in mapping.items():
-    #             assert isinstance(linear, nn.Linear), f"{name} expected nn.Linear, got {type(linear)}"
-    #             # print(f"Processing {name}: {tuple(linear.weight.shape)}")
-    #             out_features = linear.out_features
-    #             # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
-    #             hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
-    #             wrapped = replace_linear_with_colwise(linear, hot_idx)
-    #             if name.startswith("self_attn."):
-    #                 setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
-    #             else:
-    #                 setattr(layer.mlp,       name.split(".", 1)[1], wrapped)
-
-    #         # # quick sanity check
-    #         # print(type(layer.self_attn.q_proj), layer.self_attn.q_proj.W_hot.shape, layer.self_attn.q_proj.W_cold.shape)
-    #         # print(type(layer.mlp.up_proj),      layer.mlp.up_proj.W_hot.shape,      layer.mlp.up_proj.W_cold.shape)
-
-    # else:
-    #     print("SKIP is set to False, not replacing linear layers with LinearColWise.")
-
-
+    # exit()
 
 
 
