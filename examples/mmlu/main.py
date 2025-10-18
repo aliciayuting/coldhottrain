@@ -37,8 +37,8 @@ MAX_TOKENS = 768                # prompt+answer max length
 TRAIN_SPLIT = "validation"      # demo: train on val, eval on test
 EVAL_SPLIT = "test"
 OUTPUT_DIR = "./output/out_qwen25_7b_mmlu_lora"
-MAX_TRAIN_SAMPLES = None
-MAX_EVAL_SAMPLES = None
+MAX_TRAIN_SAMPLES = 32
+MAX_EVAL_SAMPLES = 32
 
 # LoRA hyperparams (good starting point)
 LORA_R = 16
@@ -56,7 +56,7 @@ GRAD_ACCUM = 1
 LR = 2e-4 if USE_LORA else 1e-5
 NUM_EPOCHS = 1
 WARMUP_RATIO = 0.03
-MAX_STEPS = 1
+MAX_STEPS = 5
 
 
 # ---------------------------
@@ -224,7 +224,7 @@ def main():
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
         # attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,
-        device_map="auto",
+        # device_map="auto",
         # quantization_config=quant_cfg,
     )
 
@@ -262,13 +262,15 @@ def main():
         # save_strategy="steps",
         save_steps=200,
         save_total_limit=2,
-        bf16=False,
+        bf16=True,
         lr_scheduler_type="cosine",
         gradient_checkpointing=True,
         report_to=[],
         max_steps=MAX_STEPS,
         overwrite_output_dir=True,
         # resume_from_checkpoint="no",
+        ddp_backend="nccl",               # default on Linux + NVIDIA
+        ddp_find_unused_parameters=False,
     )
 
     trainer = Trainer(
@@ -279,6 +281,7 @@ def main():
         tokenizer=tok,
         data_collator=PadCollator(tok),
         compute_metrics=compute_letter_token_accuracy,
+
     )
 
     trainer.train()
