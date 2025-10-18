@@ -261,8 +261,8 @@ def wrap_with_lora(base, args, num_labels):
 # ---------- Main ----------
 def main():
     args = parse_args()
-    SCRATCH_PREFIX = "./"
-    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # SCRATCH_PREFIX = "./"
+    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
