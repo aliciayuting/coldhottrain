@@ -230,7 +230,46 @@ def main():
     base = load_base_model(args, tok, num_labels)
     model = wrap_with_lora(base, args)
 
-    model.print_trainable_parameters()  # sanity count
+    # CRITICAL: Re-initialize classifier AFTER LoRA wrapping
+    # PEFT's modules_to_save creates a copy at: base_model.model.score.modules_to_save.default
+    print("\n=== Re-initializing Classifier After PEFT Wrapping ===")
+    
+    # Find and reinitialize the trainable classifier
+    classifier_reinitialized = False
+    for name, param in model.named_parameters():
+        # Look for the trainable score layer (in modules_to_save)
+        if 'modules_to_save' in name and 'score' in name and 'weight' in name:
+            print(f"Found trainable classifier: {name}")
+            print(f"  Before: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+            
+            # Re-initialize with small std
+            with torch.no_grad():
+                param.data = torch.randn_like(param.data) * 0.01
+            
+            print(f"  After:  mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+            classifier_reinitialized = True
+        
+        # Also zero out bias if it exists
+        if 'modules_to_save' in name and 'score' in name and 'bias' in name:
+            print(f"Found trainable classifier bias: {name}")
+            with torch.no_grad():
+                param.data.zero_()
+            classifier_reinitialized = True
+    
+    if not classifier_reinitialized:
+        print("WARNING: Could not find trainable classifier to reinitialize!")
+        print("Attempting fallback method...")
+        # Fallback: try to access directly
+        try:
+            score_layer = model.base_model.model.score.modules_to_save.default
+            torch.nn.init.normal_(score_layer.weight, mean=0.0, std=0.01)
+            if score_layer.bias is not None:
+                torch.nn.init.zeros_(score_layer.bias)
+            print(f"✓ Reinitialized via direct access: std={score_layer.weight.data.std().item():.6f}")
+        except Exception as e:
+            print(f"ERROR: Could not reinitialize classifier: {e}")
+
+    model.print_trainable_parameters()
 
     # Inspect the classifier head's grad status and stats
     print("\n=== Classifier Head Inspection ===")
