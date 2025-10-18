@@ -95,10 +95,9 @@ def tokenize_dataset(task: str, tok, ds, max_len: int):
             return tok(examples["sentence"], truncation=True, max_length=max_len, padding=False)
         remove_cols = ["sentence", "idx"]
     else:  # mnli
-        def tok_fn(examples):
+        def tok_fn(example):
             return tok(
-                examples["premise"], 
-                examples["hypothesis"], 
+                f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
                 truncation=True, 
                 max_length=max_len,
                 padding=False
@@ -106,7 +105,7 @@ def tokenize_dataset(task: str, tok, ds, max_len: int):
         remove_cols = ["premise", "hypothesis", "idx"]
 
     # Use batched=True for better performance
-    ds_tok = ds.map(tok_fn, batched=True, remove_columns=remove_cols)
+    ds_tok = ds.map(tok_fn, batched=False, remove_columns=remove_cols)
     
     # Rename label column if exists
     if "label" in ds_tok["train"].column_names:
@@ -264,7 +263,8 @@ def wrap_with_lora(base, args, num_labels):
 # ---------- Main ----------
 def main():
     args = parse_args()
-    SCRATCH_PREFIX = "./"
+    # SCRATCH_PREFIX = "./"
+    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
