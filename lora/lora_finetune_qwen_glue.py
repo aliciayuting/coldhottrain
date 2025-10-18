@@ -54,17 +54,17 @@ def parse_args():
     p.add_argument("--max_len", type=int, default=512)
     p.add_argument("--batch_size", type=int, default=16, help="Per-device train/eval batch size.")
     p.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps.")
-    p.add_argument("--num_epochs", type=float, default=1.0)  # Increased from 1.0
+    p.add_argument("--num_epochs", type=float, default=3.0)  # Increased from 1.0
     p.add_argument("--learning_rate", type=float, default=5e-4)  # Increase from 1e-4
     p.add_argument("--weight_decay", type=float, default=0.01)
-    p.add_argument("--warmup_ratio", type=float, default=0.06)  # Smaller warmup
+    p.add_argument("--warmup_ratio", type=float, default=0.03)  # Smaller warmup
     p.add_argument("--logging_steps", type=int, default=100)
     p.add_argument("--eval_steps", type=int, default=500)  # More frequent eval
     p.add_argument("--max_grad_norm", type=float, default=1.0)  # Less aggressive clipping
 
     # LoRA hyperparams
     p.add_argument("--lora_r", type=int, default=8)  # Back to 8, simpler is better
-    p.add_argument("--lora_alpha", type=float, default=32)  # Match with r for scaling=1
+    p.add_argument("--lora_alpha", type=float, default=16)  # Match with r for scaling=1
     p.add_argument("--lora_dropout", type=float, default=0)  # Small dropout
 
     # Mixed precision
@@ -114,7 +114,7 @@ def make_compute_metrics(task: str):
 # ---------- Model init (with optional QLoRA) ----------
 def load_base_model(args, tok, num_labels: int):
     use_qlora = str2bool(args.use_qlora) if isinstance(args.use_qlora, str) else args.use_qlora
-    low_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8) else torch.float16
+    low_dtype = torch.float32 #torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8) else torch.float16
 
     if use_qlora:
         from transformers import BitsAndBytesConfig
@@ -185,6 +185,10 @@ def wrap_with_lora(base, args):
         modules_to_save=["score"]  # or ["classifier"] depending on model
     )
     model = get_peft_model(base, lora_cfg)
+    # Now manually mark classifier as trainable
+    for name, param in model.named_parameters():
+        if 'score' in name:
+            param.requires_grad = True
     # Show trainable params for sanity
     model.print_trainable_parameters()
     return model
@@ -303,7 +307,7 @@ def main():
     
     # Precision
     use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
-    fp16 = args.fp16 or (not args.bf16 and not use_bf16_hw)  # default to fp16 on older GPUs
+    fp16 = args.fp16   # default to fp16 on older GPUs
     bf16 = args.bf16 or (use_bf16_hw and not args.fp16)
     print(f"fp16 is {fp16}")
     print(f"bf16 is {bf16}")
