@@ -52,21 +52,22 @@ def parse_args():
                    help="Where to save the LoRA adapter.")
     p.add_argument("--use_qlora", type=str, default="false",
                    help="If 'true', load base in 4-bit and prepare for k-bit training.")
-    p.add_argument("--max_len", type=int, default=256)  # Reduced for efficiency
-    p.add_argument("--batch_size", type=int, default=16, help="Per-device train/eval batch size.")  # Reduced to avoid OOM
-    p.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps.")  # Compensate for smaller batch
-    p.add_argument("--num_epochs", type=float, default=5.0)  # More epochs
-    p.add_argument("--learning_rate", type=float, default=3e-4)  # Better default
+    p.add_argument("--max_len", type=int, default=512)  # Shorter sequences for speed
+    p.add_argument("--batch_size", type=int, default=16, help="Per-device train/eval batch size.")
+    p.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps.")  # Larger effective batch
+    p.add_argument("--num_epochs", type=float, default=2.0)  # Fewer epochs
+    p.add_argument("--learning_rate", type=float, default=1e-4)  # MUCH lower to prevent NaN
     p.add_argument("--weight_decay", type=float, default=0.01)
-    p.add_argument("--warmup_ratio", type=float, default=0.1)  # More warmup
-    p.add_argument("--logging_steps", type=int, default=50)
-    p.add_argument("--eval_steps", type=int, default=200)
+    p.add_argument("--warmup_ratio", type=float, default=0)  # More warmup
+    p.add_argument("--logging_steps", type=int, default=100)
+    p.add_argument("--eval_steps", type=int, default=500)  # Less frequent eval for speed
     p.add_argument("--max_grad_norm", type=float, default=1.0)
+    p.add_argument("--max_steps", type=int, default=-1, help="Max training steps (overrides epochs if set)")  # Add this!
 
     # LoRA hyperparams
-    p.add_argument("--lora_r", type=int, default=16)  # Higher rank
-    p.add_argument("--lora_alpha", type=float, default=32)  # 2x rank
-    p.add_argument("--lora_dropout", type=float, default=0.05)  # Small dropout
+    p.add_argument("--lora_r", type=int, default=8)  # Higher rank
+    p.add_argument("--lora_alpha", type=float, default=16)  # MATCH rank for scaling=1 (safer)
+    p.add_argument("--lora_dropout", type=float, default=0.1)  # More dropout for stability
 
     # Mixed precision
     p.add_argument("--fp16", action="store_true", help="Force FP16 (overrides bf16 if both set).")
@@ -370,17 +371,35 @@ def main():
         'attention_mask': torch.ones(4, 64).to(model.device),
         'labels': torch.tensor([0, 1, 2, 0] if num_labels == 3 else [0, 1, 0, 1]).to(model.device)
     }
+    
+    # Check for NaN in model parameters before training
+    nan_found = False
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any():
+            logging.error(f"❌ NaN found in parameter: {name}")
+            nan_found = True
+    if nan_found:
+        raise RuntimeError("Model has NaN parameters before training!")
+    
     with torch.no_grad():
         outputs = model(**dummy_input)
         expected_loss = np.log(num_labels)
         logging.info(f"Initial loss: {outputs.loss.item():.4f} (expected ~{expected_loss:.4f})")
         logging.info(f"Logits sample: {outputs.logits[0].cpu().tolist()}")
         logit_std = outputs.logits.std().item()
-        logging.info(f"Logit std: {logit_std:.4f}")
+        logit_max = outputs.logits.abs().max().item()
+        logging.info(f"Logit std: {logit_std:.4f}, max_abs: {logit_max:.4f}")
+        
+        if torch.isnan(outputs.loss):
+            raise RuntimeError("❌ Initial loss is NaN! Check model initialization.")
+        if logit_max > 10.0:
+            logging.error(f"❌ Logits too large ({logit_max:.2f})! Will cause overflow.")
+            raise RuntimeError("Logits too large - reinitialize classifier with smaller std!")
+        
         if abs(outputs.loss.item() - expected_loss) > 0.5:
             logging.warning(f"⚠️  Initial loss is far from expected! Logit std={logit_std:.4f}")
             if logit_std > 1.0:
-                logging.warning("⚠️  Logits have high variance - classifier initialization may be too large!")
+                logging.warning("⚠️  Logits have high variance - may cause instability!")
     
     # Verify trainable parameters
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -408,15 +427,16 @@ def main():
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size * 2,  # Larger eval batch
         gradient_accumulation_steps=args.grad_accum,
         num_train_epochs=args.num_epochs,
+        max_steps=args.max_steps,  # Allow limiting steps
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         max_grad_norm=args.max_grad_norm,
         warmup_ratio=args.warmup_ratio,
         gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},  # CRITICAL: Required for proper gradients
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         logging_steps=args.logging_steps,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
@@ -429,7 +449,11 @@ def main():
         ddp_find_unused_parameters=False,
         fp16=fp16,
         bf16=bf16,
-        report_to="none",  # Disable wandb/tensorboard if not needed
+        fp16_full_eval=fp16,  # Stable eval
+        dataloader_num_workers=4,
+        optim="adamw_torch",  # More stable than default
+        adam_epsilon=1e-6,  # Prevent division by zero
+        report_to="none",
     )
 
     compute_metrics = make_compute_metrics(args.task_name)
