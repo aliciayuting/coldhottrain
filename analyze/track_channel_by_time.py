@@ -36,13 +36,14 @@ DEFAULT_MHA_V_DIM       = "row"    # v_proj: row = head output
 DEFAULT_MHA_O_DIM       = "col"    # o_proj: col = head input
 
 # Visualization options
-DEFAULT_INCLUDE_BIAS     = False
+DEFAULT_INCLUDE_BIAS     = True
 DEFAULT_PLOT_LOG_SCALE   = True
 DEFAULT_PLOT_ALL         = True
 DEFAULT_PLOT_TOP_K       = True
 DEFAULT_PLOT_BOTTOM_K    = True
 DEFAULT_PLOT_COMBINED    = True   # Plot all matrices together
 DEFAULT_PLOT_INDIVIDUAL  = True   # Plot each matrix separately
+DEFAULT_SPLIT_BY_LAYER   = True   # If True, create separate plots for each layer
 
 # ========================
 # Script
@@ -138,10 +139,15 @@ def load_grad_channels_for_step(
     mha_k_dim: str = "row",
     mha_v_dim: str = "row",
     mha_o_dim: str = "col",
-    include_bias: bool = True
+    include_bias: bool = True,
+    split_by_layer: bool = True
 ) -> Dict[str, Tuple[np.ndarray, List[Tuple[int, str]]]]:
     """
     Load gradient data for a single step and aggregate by matrix type.
+    
+    Args:
+        split_by_layer: If True, create separate entries for each layer (e.g., mlp_up_layer0, mlp_up_layer1)
+                       If False, concatenate all layers together (e.g., mlp_up)
     
     Returns:
         Dictionary mapping matrix name to (gradient_array, channel_ids)
@@ -207,25 +213,45 @@ def load_grad_channels_for_step(
     
     # Consolidate into arrays with channel IDs
     results = {}
-    for matrix_name, layer_dict in matrix_data.items():
-        all_arrays = []
-        channel_ids = []
-        
-        for layer_id in sorted(layer_dict.keys()):
-            arrays = layer_dict[layer_id]
-            if arrays:
-                # Sum if multiple arrays per layer (shouldn't happen, but be safe)
-                combined = sum(arrays) if len(arrays) > 1 else arrays[0]
-                all_arrays.append(combined)
-                
-                # Create channel IDs
-                for ch_idx in range(combined.size):
-                    channel_ids.append((layer_id, f"{matrix_name}_{ch_idx}"))
-        
-        if all_arrays:
-            gradient_array = np.concatenate(all_arrays, axis=0)
-            results[matrix_name] = (gradient_array, channel_ids)
-            print(f"  {matrix_name}: {len(layer_dict)} layers, {gradient_array.size} channels")
+    
+    if split_by_layer:
+        # Create separate entry for each layer
+        for matrix_type, layer_dict in matrix_data.items():
+            for layer_id in sorted(layer_dict.keys()):
+                arrays = layer_dict[layer_id]
+                if arrays:
+                    # Sum if multiple arrays per layer (shouldn't happen, but be safe)
+                    combined = sum(arrays) if len(arrays) > 1 else arrays[0]
+                    
+                    # Create channel IDs
+                    channel_ids = []
+                    for ch_idx in range(combined.size):
+                        channel_ids.append((layer_id, f"{matrix_type}_layer{layer_id}_ch{ch_idx}"))
+                    
+                    matrix_name = f"{matrix_type}_layer{layer_id:02d}"
+                    results[matrix_name] = (combined, channel_ids)
+                    print(f"  {matrix_name}: {combined.size} channels")
+    else:
+        # Concatenate all layers together (original behavior)
+        for matrix_type, layer_dict in matrix_data.items():
+            all_arrays = []
+            channel_ids = []
+            
+            for layer_id in sorted(layer_dict.keys()):
+                arrays = layer_dict[layer_id]
+                if arrays:
+                    # Sum if multiple arrays per layer (shouldn't happen, but be safe)
+                    combined = sum(arrays) if len(arrays) > 1 else arrays[0]
+                    all_arrays.append(combined)
+                    
+                    # Create channel IDs
+                    for ch_idx in range(combined.size):
+                        channel_ids.append((layer_id, f"{matrix_type}_{ch_idx}"))
+            
+            if all_arrays:
+                gradient_array = np.concatenate(all_arrays, axis=0)
+                results[matrix_type] = (gradient_array, channel_ids)
+                print(f"  {matrix_type}: {len(layer_dict)} layers, {gradient_array.size} channels")
     
     return results
 
@@ -240,10 +266,14 @@ def load_all_steps_gradients(
     mha_k_dim: str = "row",
     mha_v_dim: str = "row",
     mha_o_dim: str = "col",
-    include_bias: bool = True
+    include_bias: bool = True,
+    split_by_layer: bool = True
 ) -> Dict[str, Tuple[List[int], np.ndarray]]:
     """
     Load gradient data for multiple steps, organized by matrix type.
+    
+    Args:
+        split_by_layer: If True, create separate entries for each layer
     
     Returns:
         Dictionary mapping matrix name to (valid_steps, gradient_matrix)
@@ -257,7 +287,7 @@ def load_all_steps_gradients(
             print(f"\nStep {step}:")
             step_results = load_grad_channels_for_step(
                 grad_base_dir, step, mlp_up_dim, mlp_down_dim, mlp_gate_dim,
-                mha_q_dim, mha_k_dim, mha_v_dim, mha_o_dim, include_bias
+                mha_q_dim, mha_k_dim, mha_v_dim, mha_o_dim, include_bias, split_by_layer
             )
             
             for matrix_name, (grad_array, channel_ids) in step_results.items():
@@ -326,6 +356,10 @@ def plot_matrix_timeseries(
     top_indices = np.argsort(max_grads)[::-1][:top_k]
     bottom_indices = np.argsort(max_grads)[:bottom_k]
     
+    # Create matrix-specific subdirectory
+    matrix_dir = os.path.join(out_dir, matrix_name)
+    os.makedirs(matrix_dir, exist_ok=True)
+    
     # Top-k plot
     if plot_top and top_k > 0:
         fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
@@ -345,7 +379,7 @@ def plot_matrix_timeseries(
             ax.legend(loc="best", fontsize=8)
         
         plt.tight_layout()
-        out_path = os.path.join(out_dir, f"{matrix_name}_top{top_k}.png")
+        out_path = os.path.join(matrix_dir, f"{matrix_name}_top{top_k}.png")
         plt.savefig(out_path, bbox_inches="tight")
         plt.close(fig)
         print(f"[PLOT] {out_path}")
@@ -369,7 +403,7 @@ def plot_matrix_timeseries(
             ax.legend(loc="best", fontsize=8)
         
         plt.tight_layout()
-        out_path = os.path.join(out_dir, f"{matrix_name}_bottom{bottom_k}.png")
+        out_path = os.path.join(matrix_dir, f"{matrix_name}_bottom{bottom_k}.png")
         plt.savefig(out_path, bbox_inches="tight")
         plt.close(fig)
         print(f"[PLOT] {out_path}")
@@ -396,7 +430,7 @@ def plot_matrix_timeseries(
         ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        out_path = os.path.join(out_dir, f"{matrix_name}_all.png")
+        out_path = os.path.join(matrix_dir, f"{matrix_name}_all.png")
         plt.savefig(out_path, bbox_inches="tight")
         plt.close(fig)
         print(f"[PLOT] {out_path}")
@@ -424,10 +458,41 @@ def plot_matrix_timeseries(
     ax.legend(loc="best")
     
     plt.tight_layout()
-    out_path = os.path.join(out_dir, f"{matrix_name}_stats.png")
+    out_path = os.path.join(matrix_dir, f"{matrix_name}_stats.png")
     plt.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
     print(f"[PLOT] {out_path}")
+    
+    # Save CSV data for this matrix
+    csv_data = {
+        "step": steps,
+        "mean": mean_grad,
+        "median": median_grad,
+        "p90": p90_grad,
+        "p99": p99_grad,
+        "max": max_grad
+    }
+    df = pd.DataFrame(csv_data)
+    csv_path = os.path.join(matrix_dir, f"{matrix_name}_stats.csv")
+    df.to_csv(csv_path, index=False)
+    
+    # Save top-k channel trajectories
+    if plot_top:
+        top_channel_data = {"step": steps}
+        for rank, idx in enumerate(top_indices, 1):
+            top_channel_data[f"channel_{idx}"] = gradient_matrix[:, idx]
+        df = pd.DataFrame(top_channel_data)
+        csv_path = os.path.join(matrix_dir, f"{matrix_name}_top{top_k}_channels.csv")
+        df.to_csv(csv_path, index=False)
+    
+    # Save bottom-k channel trajectories
+    if plot_bottom:
+        bottom_channel_data = {"step": steps}
+        for rank, idx in enumerate(bottom_indices, 1):
+            bottom_channel_data[f"channel_{idx}"] = gradient_matrix[:, idx]
+        df = pd.DataFrame(bottom_channel_data)
+        csv_path = os.path.join(matrix_dir, f"{matrix_name}_bottom{bottom_k}_channels.csv")
+        df.to_csv(csv_path, index=False)
 
 
 def plot_combined_timeseries(
@@ -529,6 +594,12 @@ def parse_args():
     parser.add_argument("--include_bias", action="store_true", default=DEFAULT_INCLUDE_BIAS)
     parser.add_argument("--no_include_bias", dest="include_bias", action="store_false")
     
+    # Layer splitting
+    parser.add_argument("--split_by_layer", action="store_true", default=DEFAULT_SPLIT_BY_LAYER,
+                       help="Create separate plots for each layer")
+    parser.add_argument("--no_split_by_layer", dest="split_by_layer", action="store_false",
+                       help="Combine all layers together")
+    
     return parser.parse_args()
 
 
@@ -549,6 +620,7 @@ def main():
     print(f"  MHA k_proj:    {args.mha_k_dim}")
     print(f"  MHA v_proj:    {args.mha_v_dim}")
     print(f"  MHA o_proj:    {args.mha_o_dim}")
+    print(f"\nSplit by layer:     {args.split_by_layer}")
     print("=" * 70)
     
     # Determine steps
@@ -567,7 +639,7 @@ def main():
         args.grad_base_dir, steps,
         args.mlp_up_dim, args.mlp_down_dim, args.mlp_gate_dim,
         args.mha_q_dim, args.mha_k_dim, args.mha_v_dim, args.mha_o_dim,
-        args.include_bias
+        args.include_bias, args.split_by_layer
     )
     
     if not all_matrices:
