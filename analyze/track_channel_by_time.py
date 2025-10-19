@@ -18,8 +18,8 @@ Usage:
 # ========================
 # Default Config
 # ========================
-DEFAULT_GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
-DEFAULT_OUT_DIR         = "/pscratch/sd/l/lsx/yyt_tmp/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/gradient_timeseries_normalized"
+DEFAULT_GRAD_BASE_DIR   = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/grad_dump"
+DEFAULT_OUT_DIR         = "/pscratch/sd/l/lsx/yyt_runs/Qwen_Qwen2.5-0.5B-tatsu-lab_alpaca/gradient_timeseries_normalized"
 DEFAULT_TOP_K           = 50
 DEFAULT_BOTTOM_K        = 50
 
