@@ -85,6 +85,35 @@ def _load_any_tensor(path: str) -> torch.Tensor:
         raise RuntimeError(f"Failed to load tensor from {path}: {e}")
 
 
+def _infer_attention_heads(q_proj_weight: torch.Tensor, model_dim: int) -> Tuple[int, int]:
+    """
+    Infer number of attention heads and head dimension from q_proj weight.
+    
+    Args:
+        q_proj_weight: Weight tensor of shape [n_heads * d_head, d_model]
+        model_dim: Model dimension (d_model)
+    
+    Returns:
+        (n_heads, d_head) tuple
+    """
+    out_dim = q_proj_weight.shape[0]
+    
+    # Try common head configurations
+    for n_heads in [8, 12, 16, 20, 24, 32, 40, 48, 64]:
+        if out_dim % n_heads == 0:
+            d_head = out_dim // n_heads
+            if 32 <= d_head <= 256:  # Reasonable head dimension range
+                return n_heads, d_head
+    
+    # Fallback: assume d_head = 64 or 128
+    for d_head in [64, 128]:
+        if out_dim % d_head == 0:
+            n_heads = out_dim // d_head
+            return n_heads, d_head
+    
+    raise RuntimeError(f"Cannot infer attention heads from q_proj shape {tuple(q_proj_weight.shape)}")
+
+
 def load_grad_channels_for_step(grad_base_dir: str, step: int, 
                                  channel_type: str = "incoming",
                                  include_bias: bool = True) -> Tuple[np.ndarray, List[Tuple[int, str]]]:
@@ -94,7 +123,7 @@ def load_grad_channels_for_step(grad_base_dir: str, step: int,
     Args:
         grad_base_dir: Base directory containing index.csv
         step: Training step number
-        channel_type: "incoming" (up_proj columns), "outgoing" (down_proj rows), or "both"
+        channel_type: "incoming", "outgoing", "both", "attention", or "mlp_and_attention"
         include_bias: Whether to include bias terms
     
     Returns:
@@ -114,12 +143,19 @@ def load_grad_channels_for_step(grad_base_dir: str, step: int,
     
     # Store per-layer channel energies with ordering
     mlp_energy_per_layer: Dict[int, Dict[str, np.ndarray]] = {}
+    attn_energy_per_layer: Dict[int, Dict[str, torch.Tensor]] = {}
     
     def _ensure_mlp(layer_id, key, size):
         d = mlp_energy_per_layer.setdefault(layer_id, {})
         if key not in d:
             d[key] = np.zeros(size, dtype=np.float64)
     
+    def _ensure_attn(layer_id, key):
+        d = attn_energy_per_layer.setdefault(layer_id, {})
+        if key not in d:
+            d[key] = None
+    
+    # First pass: collect all gradients
     for _, r in rows.iterrows():
         layer_id = int(r["layer"])
         sub = r["submodule"]
@@ -138,56 +174,110 @@ def load_grad_channels_for_step(grad_base_dir: str, step: int,
             else:
                 continue
         
+        # MLP processing
         if sub == "mlp":
             if param == "up_proj.weight":
-                # Per-channel incoming: sum over output dim (columns)
                 e = (G.to(torch.float32).pow(2).sum(dim=0)).cpu().numpy()
                 _ensure_mlp(layer_id, "incoming", e.size)
                 mlp_energy_per_layer[layer_id]["incoming"] += e
                 
             elif param == "down_proj.weight":
-                # Per-channel outgoing: sum over input dim (rows)
                 e = (G.to(torch.float32).pow(2).sum(dim=1)).cpu().numpy()
                 _ensure_mlp(layer_id, "outgoing", e.size)
                 mlp_energy_per_layer[layer_id]["outgoing"] += e
+        
+        # Attention processing
+        elif sub == "self_attn":
+            _ensure_attn(layer_id, param)
+            if attn_energy_per_layer[layer_id][param] is None:
+                attn_energy_per_layer[layer_id][param] = G.pow(2)
+            else:
+                attn_energy_per_layer[layer_id][param] += G.pow(2)
     
-    # Combine channels based on channel_type, maintaining consistent ordering
-    mlp_all = []
+    # Process results based on channel_type
+    result_arrays = []
     channel_ids = []
     
-    # Sort by layer ID to ensure consistent ordering
-    for lid in sorted(mlp_energy_per_layer.keys()):
-        d = mlp_energy_per_layer[lid]
-        inc = d.get("incoming", None)
-        out = d.get("outgoing", None)
-        
-        if channel_type == "incoming" and inc is not None:
-            mlp_all.append(inc)
-            # Create channel identifiers
-            for ch_idx in range(inc.size):
-                channel_ids.append((lid, f"incoming_{ch_idx}"))
-                
-        elif channel_type == "outgoing" and out is not None:
-            mlp_all.append(out)
-            for ch_idx in range(out.size):
-                channel_ids.append((lid, f"outgoing_{ch_idx}"))
-                
-        elif channel_type == "both":
-            if inc is not None and out is not None:
-                combined = inc + out
-                mlp_all.append(combined)
-                for ch_idx in range(combined.size):
-                    channel_ids.append((lid, f"both_{ch_idx}"))
-            elif inc is not None:
-                mlp_all.append(inc)
+    # MLP channels
+    if channel_type in ["incoming", "outgoing", "both", "mlp_and_attention"]:
+        for lid in sorted(mlp_energy_per_layer.keys()):
+            d = mlp_energy_per_layer[lid]
+            inc = d.get("incoming", None)
+            out = d.get("outgoing", None)
+            
+            if channel_type == "incoming" and inc is not None:
+                result_arrays.append(inc)
                 for ch_idx in range(inc.size):
-                    channel_ids.append((lid, f"incoming_{ch_idx}"))
-            elif out is not None:
-                mlp_all.append(out)
+                    channel_ids.append((lid, f"mlp_incoming_{ch_idx}"))
+                    
+            elif channel_type == "outgoing" and out is not None:
+                result_arrays.append(out)
                 for ch_idx in range(out.size):
-                    channel_ids.append((lid, f"outgoing_{ch_idx}"))
+                    channel_ids.append((lid, f"mlp_outgoing_{ch_idx}"))
+                    
+            elif channel_type in ["both", "mlp_and_attention"]:
+                if inc is not None and out is not None:
+                    combined = inc + out
+                    result_arrays.append(combined)
+                    for ch_idx in range(combined.size):
+                        channel_ids.append((lid, f"mlp_both_{ch_idx}"))
+                elif inc is not None:
+                    result_arrays.append(inc)
+                    for ch_idx in range(inc.size):
+                        channel_ids.append((lid, f"mlp_incoming_{ch_idx}"))
+                elif out is not None:
+                    result_arrays.append(out)
+                    for ch_idx in range(out.size):
+                        channel_ids.append((lid, f"mlp_outgoing_{ch_idx}"))
     
-    gradient_array = np.concatenate(mlp_all, axis=0) if mlp_all else np.array([])
+    # Attention heads
+    if channel_type in ["attention", "mlp_and_attention"]:
+        for lid in sorted(attn_energy_per_layer.keys()):
+            d = attn_energy_per_layer[lid]
+            
+            # Get q_proj to infer head structure
+            q_proj_grad = d.get("q_proj.weight", None)
+            k_proj_grad = d.get("k_proj.weight", None)
+            v_proj_grad = d.get("v_proj.weight", None)
+            o_proj_grad = d.get("o_proj.weight", None)
+            
+            if q_proj_grad is None:
+                continue
+            
+            # Infer number of heads and head dimension
+            try:
+                n_heads, d_head = _infer_attention_heads(q_proj_grad, q_proj_grad.shape[1])
+            except RuntimeError as e:
+                warnings.warn(f"Layer {lid}: {e}")
+                continue
+            
+            # Aggregate per-head gradient energy
+            per_head_energy = np.zeros(n_heads, dtype=np.float64)
+            
+            # Q, K, V projections: [n_heads * d_head, d_model]
+            # Split by heads and aggregate
+            for proj_name, proj_grad in [("q_proj.weight", q_proj_grad), 
+                                          ("k_proj.weight", k_proj_grad),
+                                          ("v_proj.weight", v_proj_grad)]:
+                if proj_grad is not None:
+                    # Reshape to [n_heads, d_head, d_model] and sum over d_head and d_model
+                    proj_reshaped = proj_grad.view(n_heads, d_head, -1)
+                    head_energy = proj_reshaped.sum(dim=[1, 2]).cpu().numpy()
+                    per_head_energy += head_energy
+            
+            # O projection: [d_model, n_heads * d_head]
+            # This maps from heads back to model dimension
+            if o_proj_grad is not None:
+                # Reshape to [d_model, n_heads, d_head] and sum over d_model and d_head
+                o_reshaped = o_proj_grad.view(-1, n_heads, d_head)
+                head_energy = o_reshaped.sum(dim=[0, 2]).cpu().numpy()
+                per_head_energy += head_energy
+            
+            result_arrays.append(per_head_energy)
+            for head_idx in range(n_heads):
+                channel_ids.append((lid, f"attn_head_{head_idx}"))
+    
+    gradient_array = np.concatenate(result_arrays, axis=0) if result_arrays else np.array([])
     return gradient_array, channel_ids
 
 
@@ -502,7 +592,7 @@ def parse_args():
         "--channel_type",
         type=str,
         default=DEFAULT_CHANNEL_TYPE,
-        choices=["incoming", "outgoing", "both"],
+        choices=["incoming", "outgoing", "both", "attention", "mlp_and_attention"],
         help="Type of channels to analyze"
     )
     
