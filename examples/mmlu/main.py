@@ -18,14 +18,15 @@ import numpy as np
 transformers.set_seed(42)
 
 # Configuration
+# MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 # MODEL_NAME = "Qwen/Qwen3-VL-4B-Instruct"
 DATASET = "cais/mmlu"
 OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
 MAX_LENGTH = 512
-BATCH_SIZE = 16
+BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 2
-LEARNING_RATE = 2e-5
+LEARNING_RATE = 1e-4
 NUM_EPOCHS = 50
 WARMUP_STEPS = 100
 
@@ -109,8 +110,8 @@ def tokenize_function(examples):
 
 # Process datasets
 print("Processing datasets...")
-train_dataset = dataset["auxiliary_train"].map(format_mmlu_example, remove_columns=dataset["auxiliary_train"].column_names)
-# train_dataset = dataset["test"].map(format_mmlu_example, remove_columns=dataset["test"].column_names)
+# train_dataset = dataset["auxiliary_train"].map(format_mmlu_example, remove_columns=dataset["auxiliary_train"].column_names)
+train_dataset = dataset["test"].map(format_mmlu_example, remove_columns=dataset["test"].column_names)
 val_dataset = dataset["validation"].map(format_mmlu_example, remove_columns=dataset["validation"].column_names)
 # test_dataset = dataset["test"].map(format_mmlu_example, remove_columns=dataset["test"].column_names)
 
@@ -161,7 +162,6 @@ def preprocess_logits_for_metrics(logits, labels):
 def compute_metrics(eval_pred):
     """Compute accuracy for MMLU evaluation"""
     predictions, labels = eval_pred
-    print()
     # predictions are already argmax'd token IDs from preprocess_logits_for_metrics
     
     # Create mask for non-padding/non-masked positions
@@ -170,6 +170,9 @@ def compute_metrics(eval_pred):
     # Only compare at positions where we have labels
     correct = 0
     total = 0
+
+    debug_limit = 5
+    debug_count = 0
     
     for pred_seq, label_seq, mask_seq in zip(predictions, labels, mask):
         # Get the last non-masked position (where the answer letter should be)
@@ -179,7 +182,9 @@ def compute_metrics(eval_pred):
             last_pos = valid_positions[-1]
             if pred_seq[last_pos] == label_seq[last_pos]:
                 correct += 1
-            # print(f"Predicted: {tokenizer.decode(pred_seq[last_pos]).strip()}, Actual: {tokenizer.decode(label_seq[last_pos]).strip()}")
+            if debug_count < debug_limit:
+                print(f"Predicted: {tokenizer.decode(pred_seq[last_pos]).strip()}, Actual: {tokenizer.decode(label_seq[last_pos]).strip()}")
+                debug_count += 1
             total += 1
     
     accuracy = correct / total if total > 0 else 0
