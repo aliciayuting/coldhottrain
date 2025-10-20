@@ -1,346 +1,254 @@
-import argparse
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import os
-import numpy as np
-import pandas as pd
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import math
+import random
 from collections import defaultdict
 
-choices = ["A", "B", "C", "D"]
+import torch
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from tqdm import tqdm
 
-subcategories = {
-    "abstract_algebra": ["math"],
-    "anatomy": ["health"],
-    "astronomy": ["physics"],
-    "business_ethics": ["business"],
-    "clinical_knowledge": ["health"],
-    "college_biology": ["biology"],
-    "college_chemistry": ["chemistry"],
-    "college_computer_science": ["computer science"],
-    "college_mathematics": ["math"],
-    "college_medicine": ["health"],
-    "college_physics": ["physics"],
-    "computer_security": ["computer science"],
-    "conceptual_physics": ["physics"],
-    "econometrics": ["economics"],
-    "electrical_engineering": ["engineering"],
-    "elementary_mathematics": ["math"],
-    "formal_logic": ["philosophy"],
-    "global_facts": ["other"],
-    "high_school_biology": ["biology"],
-    "high_school_chemistry": ["chemistry"],
-    "high_school_computer_science": ["computer science"],
-    "high_school_european_history": ["history"],
-    "high_school_geography": ["geography"],
-    "high_school_government_and_politics": ["politics"],
-    "high_school_macroeconomics": ["economics"],
-    "high_school_mathematics": ["math"],
-    "high_school_microeconomics": ["economics"],
-    "high_school_physics": ["physics"],
-    "high_school_psychology": ["psychology"],
-    "high_school_statistics": ["math"],
-    "high_school_us_history": ["history"],
-    "high_school_world_history": ["history"],
-    "human_aging": ["health"],
-    "human_sexuality": ["culture"],
-    "international_law": ["law"],
-    "jurisprudence": ["law"],
-    "logical_fallacies": ["philosophy"],
-    "machine_learning": ["computer science"],
-    "management": ["business"],
-    "marketing": ["business"],
-    "medical_genetics": ["health"],
-    "miscellaneous": ["other"],
-    "moral_disputes": ["philosophy"],
-    "moral_scenarios": ["philosophy"],
-    "nutrition": ["health"],
-    "philosophy": ["philosophy"],
-    "prehistory": ["history"],
-    "professional_accounting": ["other"],
-    "professional_law": ["law"],
-    "professional_medicine": ["health"],
-    "professional_psychology": ["psychology"],
-    "public_relations": ["politics"],
-    "security_studies": ["politics"],
-    "sociology": ["culture"],
-    "us_foreign_policy": ["politics"],
-    "virology": ["health"],
-    "world_religions": ["philosophy"],
-}
+from category import subcategories, categories, subject_to_categories
 
-categories = {
-    "STEM": ["physics", "chemistry", "biology", "computer science", "math", "engineering"],
-    "humanities": ["history", "philosophy", "law"],
-    "social sciences": ["politics", "culture", "economics", "geography", "psychology"],
-    "other (business, health, misc.)": ["other", "business", "health"],
-}
+# ---------------------------
+# Config
+# ---------------------------
+MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"   # or "Qwen/Qwen2.5-0.5B"
+MMLU_CONFIG = "all"                         # 57 subjects
+K_FEW_SHOT = 5                              # number of exemplars per subject
+MAX_LEN = 768                               # prompt max length (prompt only)
+SEED = 1234
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+random.seed(SEED)
+torch.manual_seed(SEED)
 
-def softmax(x):
-    z = x - max(x)
-    numerator = np.exp(z)
-    denominator = np.sum(numerator)
-    softmax = numerator/denominator
-    return softmax
+# ---------------------------
+# Helpers
+# ---------------------------
+def set_pad_if_missing(tok):
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    return tok
 
-def format_subject(subject):
-    l = subject.split("_")
-    s = ""
-    for entry in l:
-        s += " " + entry
-    return s
+def build_fewshot_bank(val_split):
+    """
+    Returns dict: subject -> list of K_FEW_SHOT few-shot exemplars (question, choices, answer)
+    Uses the first K examples per subject (deterministic).
+    """
+    bank = {}
+    by_subj = defaultdict(list)
+    for r in val_split:
+        by_subj[r["subject"]].append(r)
+    for s, rows in by_subj.items():
+        bank[s] = rows[:K_FEW_SHOT]
+    return bank
 
-def format_example(df, idx, include_answer=True):
-    prompt = df.iloc[idx, 0]
-    k = df.shape[1] - 2
-    for j in range(k):
-        prompt += "\n{}. {}".format(choices[j], df.iloc[idx, j+1])
-    prompt += "\nAnswer:"
-    if include_answer:
-        prompt += " {}\n\n".format(df.iloc[idx, k + 1])
-    return prompt
-
-def gen_prompt(train_df, subject, k=-1):
-    prompt = "The following are multiple choice questions (with answers) about {}.\n\n".format(format_subject(subject))
-    if k == -1:
-        k = train_df.shape[0]
-    for i in range(k):
-        prompt += format_example(train_df, i)
-    return prompt
-
-def get_token_logprobs(model, tokenizer, prompt, device):
-    """Get log probabilities for answer tokens A, B, C, D"""
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    
-    with torch.no_grad():
-        outputs = model(**inputs)
-        logits = outputs.logits[0, -1, :]  # Get logits for the last token position
-    
-    # Get log probabilities for each answer choice
-    lprobs = []
-    for ans in choices:
-        # Try different token formats
-        token_variants = [
-            f" {ans}",
-            ans,
-            f"{ans}",
-        ]
-        
-        best_lprob = -100
-        for variant in token_variants:
-            tokens = tokenizer.encode(variant, add_special_tokens=False)
-            if len(tokens) > 0:
-                token_id = tokens[0]
-                log_softmax = torch.nn.functional.log_softmax(logits, dim=0)
-                lprob = log_softmax[token_id].item()
-                best_lprob = max(best_lprob, lprob)
-        
-        lprobs.append(best_lprob)
-    
-    return lprobs
-
-def crop_prompt(prompt, tokenizer, max_length=2048):
-    """Crop prompt if it exceeds max length"""
-    tokens = tokenizer.encode(prompt)
-    if len(tokens) > max_length:
-        # Keep the instruction and crop the examples
-        lines = prompt.split("\n\n")
-        header = lines[0] + "\n\n"
-        examples = lines[1:]
-        
-        # Remove examples from the beginning until it fits
-        while len(tokenizer.encode(header + "\n\n".join(examples))) > max_length and len(examples) > 1:
-            examples.pop(0)
-        
-        return header + "\n\n".join(examples)
-    return prompt
-
-def eval(args, subject, model, tokenizer, device, dev_df, test_df):
-    cors = []
-    all_probs = []
-    answers = choices[:test_df.shape[1]-2]
-
-    for i in range(test_df.shape[0]):
-        # get prompt and make sure it fits
-        k = args.ntrain
-        prompt_end = format_example(test_df, i, include_answer=False)
-        train_prompt = gen_prompt(dev_df, subject, k)
-        prompt = train_prompt + prompt_end
-
-        # Crop prompt if needed
-        original_prompt = prompt
-        prompt = crop_prompt(prompt, tokenizer, max_length=args.max_length)
-        
-        # If cropped, reduce k
-        while prompt != original_prompt and k > 0:
-            k -= 1
-            train_prompt = gen_prompt(dev_df, subject, k)
-            prompt = train_prompt + prompt_end
-            original_prompt = prompt
-            prompt = crop_prompt(prompt, tokenizer, max_length=args.max_length)
-
-        label = test_df.iloc[i, test_df.shape[1]-1]
-
-        # Get log probabilities
-        lprobs = get_token_logprobs(model, tokenizer, prompt, device)
-        
-        pred = {0: "A", 1: "B", 2: "C", 3: "D"}[np.argmax(lprobs)]
-        probs = softmax(np.array(lprobs))
-
-        cor = pred == label
-        cors.append(cor)
-        all_probs.append(probs)
-
-    acc = np.mean(cors)
-    cors = np.array(cors)
-
-    all_probs = np.array(all_probs)
-    print("Average accuracy {:.3f} - {}".format(acc, subject))
-
-    return cors, acc, all_probs
-
-def main(args):
-    subjects = sorted([f.split("_test.csv")[0] for f in os.listdir(os.path.join(args.data_dir, "test")) if "_test.csv" in f])
-
-    if not os.path.exists(args.save_dir):
-        os.mkdir(args.save_dir)
-    
-    results_dir = os.path.join(args.save_dir, "results_{}".format(args.model_name.replace("/", "_")))
-    if not os.path.exists(results_dir):
-        os.mkdir(results_dir)
-
-    print(subjects)
-    print(args)
-
-    # Load model
-    print(f"Loading model: {args.model_name}")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-        trust_remote_code=True
+def render_example(r):
+    """Render a single MMLU example (without the final Answer:)."""
+    A, B, C, D = r["choices"]
+    return (
+        f"Q: {r['question']}\n"
+        f"A. {A}\nB. {B}\nC. {C}\nD. {D}\n"
     )
-    
-    if not torch.cuda.is_available():
-        model = model.to(device)
-    
-    model.eval()
-    
-    print(f"Model loaded on {device}")
-    
-    all_cors = []
-    subject_cors = {}
-    subcategory_cors = defaultdict(list)
-    category_cors = defaultdict(list)
 
-    for subject in subjects:
-        dev_df = pd.read_csv(os.path.join(args.data_dir, "dev", subject + "_dev.csv"), header=None)[:args.ntrain]
-        test_df = pd.read_csv(os.path.join(args.data_dir, "test", subject + "_test.csv"), header=None)
+def render_answer(a):
+    """Render the answer letter."""
+    # Map 0->A, 1->B, 2->C, 3->D
+    return "ABCD"[a]
 
-        cors, acc, probs = eval(args, subject, model, tokenizer, device, dev_df, test_df)
-        
-        # Store results
-        subject_cors[subject] = cors
-        all_cors.append(cors)
-        
-        # Map to subcategory
-        if subject in subcategories:
-            for subcat in subcategories[subject]:
-                subcategory_cors[subcat].append(cors)
-        
-        # Map to category
-        if subject in subcategories:
-            for subcat in subcategories[subject]:
-                for cat_name, cat_subcats in categories.items():
-                    if subcat in cat_subcats:
-                        category_cors[cat_name].append(cors)
-        
-        model_name_clean = args.model_name.replace("/", "_")
-        test_df["{}_correct".format(model_name_clean)] = cors
-        for j in range(probs.shape[1]):
-            choice = choices[j]
-            test_df["{}_choice{}_probs".format(model_name_clean, choice)] = probs[:, j]
-        test_df.to_csv(os.path.join(results_dir, "{}.csv".format(subject)), index=None)
+def build_prompt(subject, fewshot_bank, test_row):
+    """
+    Builds the full prompt ending in 'Answer: ' (note the trailing space).
+    """
+    header = f"Subject: {subject}\n\n"
+    shots = []
+    for r in fewshot_bank.get(subject, []):
+        shots.append(render_example(r) + f"Answer: {render_answer(r['answer'])}\n\n")
+    test_part = render_example(test_row) + "Answer: "
+    return header + "".join(shots) + test_part
 
-    # Calculate and print results
-    print("\n" + "="*70)
-    print("RESULTS SUMMARY")
-    print("="*70)
-    
-    # Overall accuracy
-    weighted_acc = np.mean(np.concatenate(all_cors))
-    print(f"\n{'OVERALL ACCURACY':.<50} {weighted_acc:.3f}")
-    
-    # Category accuracies
-    print(f"\n{'CATEGORY ACCURACIES':.<50}")
-    print("-"*70)
-    for cat_name in sorted(categories.keys()):
-        if cat_name in category_cors:
-            cat_acc = np.mean(np.concatenate(category_cors[cat_name]))
-            print(f"  {cat_name:.<48} {cat_acc:.3f}")
-    
-    # Subcategory accuracies
-    print(f"\n{'SUBCATEGORY ACCURACIES':.<50}")
-    print("-"*70)
-    for subcat in sorted(subcategory_cors.keys()):
-        subcat_acc = np.mean(np.concatenate(subcategory_cors[subcat]))
-        print(f"  {subcat:.<48} {subcat_acc:.3f}")
-    
-    # Individual subject accuracies
-    print(f"\n{'INDIVIDUAL SUBJECT ACCURACIES':.<50}")
-    print("-"*70)
-    for subject in sorted(subject_cors.keys()):
-        subj_acc = np.mean(subject_cors[subject])
-        print(f"  {subject:.<48} {subj_acc:.3f}")
-    
-    print("\n" + "="*70)
-    
-    # Save summary to file
-    summary_path = os.path.join(results_dir, "summary.txt")
-    with open(summary_path, "w") as f:
-        f.write("="*70 + "\n")
-        f.write("RESULTS SUMMARY\n")
-        f.write("="*70 + "\n")
-        f.write(f"\nModel: {args.model_name}\n")
-        f.write(f"n-shot: {args.ntrain}\n")
-        f.write(f"Max length: {args.max_length}\n")
-        
-        f.write(f"\n{'OVERALL ACCURACY':.<50} {weighted_acc:.3f}\n")
-        
-        f.write(f"\n{'CATEGORY ACCURACIES':.<50}\n")
-        f.write("-"*70 + "\n")
-        for cat_name in sorted(categories.keys()):
-            if cat_name in category_cors:
-                cat_acc = np.mean(np.concatenate(category_cors[cat_name]))
-                f.write(f"  {cat_name:.<48} {cat_acc:.3f}\n")
-        
-        f.write(f"\n{'SUBCATEGORY ACCURACIES':.<50}\n")
-        f.write("-"*70 + "\n")
-        for subcat in sorted(subcategory_cors.keys()):
-            subcat_acc = np.mean(np.concatenate(subcategory_cors[subcat]))
-            f.write(f"  {subcat:.<48} {subcat_acc:.3f}\n")
-        
-        f.write(f"\n{'INDIVIDUAL SUBJECT ACCURACIES':.<50}\n")
-        f.write("-"*70 + "\n")
-        for subject in sorted(subject_cors.keys()):
-            subj_acc = np.mean(subject_cors[subject])
-            f.write(f"  {subject:.<48} {subj_acc:.3f}\n")
-        
-        f.write("\n" + "="*70 + "\n")
-    
-    print(f"\nSummary saved to: {summary_path}")
+def prepare_label_ids(tok):
+    """
+    Returns:
+        label_texts: [" A"," B"," C"," D"]
+        label_ids_list: List[List[int]] tokenized labels
+        single_token: bool (True if all labels are exactly one token)
+        first_token_ids: List[int] (first token of each label)
+    """
+    label_texts = [" A", " B", " C", " D"]   # leading space matters
+    label_ids_list = [tok(t, add_special_tokens=False).input_ids for t in label_texts]
+    single_token = all(len(ids) == 1 for ids in label_ids_list)
+    first_token_ids = [ids[0] for ids in label_ids_list]
+    return label_texts, label_ids_list, single_token, first_token_ids
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ntrain", "-k", type=int, default=5)
-    parser.add_argument("--data_dir", "-d", type=str, default="data")
-    parser.add_argument("--save_dir", "-s", type=str, default="results")
-    parser.add_argument("--model_name", "-m", type=str, default="Qwen/Qwen2.5-0.5B",
-                        help="Hugging Face model name")
-    parser.add_argument("--max_length", type=int, default=2048,
-                        help="Maximum sequence length for the model")
-    args = parser.parse_args()
-    main(args)
+@torch.no_grad()
+def probs_over_4_labels_single_token(model, input_ids, attention_mask, first_token_ids):
+    """
+    Single forward pass → logits for next token → gather 4 logits → softmax over the 4.
+    input_ids: [1, T]
+    attention_mask: [1, T]
+    returns: torch.Tensor shape [4] with probs summing to 1.
+    """
+    out = model(input_ids=input_ids, attention_mask=attention_mask)
+    next_logits = out.logits[0, -1]                            # [V]
+    label_logits = next_logits[first_token_ids]                # [4]
+    probs = label_logits.softmax(dim=-1)                       # normalized over the 4 labels
+    return probs
+
+@torch.no_grad()
+def probs_over_4_labels_span(model, input_ids, attention_mask, label_ids_list):
+    """
+    Safe version for multi-token labels:
+    1) Run the prompt once to get past_key_values.
+    2) For each label, step through its tokens, summing log-probs.
+    3) Softmax over the 4 summed log-probs to get a 4-way distribution.
+    """
+    # Step 1: run the prompt once
+    out = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
+    base_past = getattr(out, "past_key_values", None)
+
+    logps = []
+    for lid in label_ids_list:
+        lid_t = torch.tensor([lid], device=input_ids.device)   # [1, k]
+        past = base_past
+        running_attn_len = input_ids.shape[1]                  # track for models that need mask length
+        logp = 0.0
+
+        # Feed label tokens one by one
+        for t in range(lid_t.size(1)):
+            step_ids = lid_t[:, t:t+1]                         # [1, 1]
+            if past is None:
+                # Fallback: concatenate prompt + prefix (rarely needed)
+                concat = torch.cat([input_ids, lid_t[:, :t+1]], dim=1)
+                out_step = model(input_ids=concat, use_cache=True)
+                next_logprobs = out_step.logits[:, -1, :].log_softmax(-1)
+            else:
+                out_step = model(input_ids=step_ids, past_key_values=past, use_cache=True)
+                next_logprobs = out_step.logits[:, -1, :].log_softmax(-1)
+
+            tgt = step_ids[0, 0].item()
+            logp += float(next_logprobs[0, tgt].item())
+            past = getattr(out_step, "past_key_values", None)
+            running_attn_len += 1
+
+        logps.append(logp)
+
+    # Convert log-scores to a probability distribution over the 4 labels
+    logps_t = torch.tensor(logps, device=input_ids.device)     # [4]
+    probs = torch.softmax(logps_t, dim=-1)                     # [4]
+    return probs
+
+def gold_to_index(gold_letter):
+    """Map 'A'/'B'/'C'/'D' to 0..3."""
+    return "ABCD".index(gold_letter)
+
+# ---------------------------
+# Main
+# ---------------------------
+def main():
+    print(f"Loading model: {MODEL_NAME}")
+    tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
+    tok = set_pad_if_missing(tok)
+
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16 if DEVICE == "cuda" else None)
+    model.to(DEVICE).eval()
+
+    print("Loading MMLU dataset...")
+    ds = load_dataset("cais/mmlu", MMLU_CONFIG)
+    val, test = ds["validation"], ds["test"]
+
+    print("Building few-shot bank...")
+    fewshot_bank = build_fewshot_bank(val)
+
+    # Prepare label tokens
+    label_texts, label_ids_list, single_token, first_token_ids = prepare_label_ids(tok)
+    if single_token:
+        print("Label tokens are single-token. Using fast single-step scoring.")
+        print(f"label_texts: {label_texts} label_ids_list: {label_ids_list} first_token_ids: {first_token_ids}")
+    else:
+        print("Detected multi-token labels. Using span scoring.")
+
+
+    # Group test rows by subject for macro accuracy
+    subjects = sorted(set(test["subject"]))
+    by_subject = defaultdict(list)
+    for r in test:
+        by_subject[r["subject"]].append(r)
+
+    per_subject_acc = {}
+    total_correct = 0
+    total_count = 0
+
+
+    debug_thres = 20
+    debug_count = 0
+
+    cat_correct = defaultdict(int)
+    cat_total = defaultdict(int)
+
+
+    subj_to_cats = subject_to_categories()
+
+    print(subj_to_cats)
+    for subj in subjects:
+        cat = subj_to_cats.get(subj, ["Unknown"])[0]
+        if cat not in cat_correct:
+            cat_correct[cat] = 0
+            cat_total[cat] = 0
+
+        rows = by_subject[subj]
+        correct = 0
+        for r in tqdm(rows, desc=f"Evaluating {subj:>20} {cat}", leave=False):
+            # print(f"Row: {r}")
+            # print(f"")
+            prompt = build_prompt(subj, fewshot_bank, r)
+            # print(f"Prompt: {prompt}")
+            enc = tok(prompt, truncation=True, max_length=MAX_LEN, add_special_tokens=False, return_tensors="pt")
+            input_ids = enc.input_ids.to(DEVICE)
+            attn_mask = enc.attention_mask.to(DEVICE)
+
+            if single_token:
+                probs = probs_over_4_labels_single_token(model, input_ids, attn_mask, first_token_ids)
+            else:
+                probs = probs_over_4_labels_span(model, input_ids, attn_mask, label_ids_list)
+
+            pred_idx = int(probs.argmax().item())
+            # gold_idx = gold_to_index(r["answer"])
+            gold_idx = int(r["answer"])
+            correct += int(pred_idx == gold_idx)
+            cat_correct[cat] += int(pred_idx == gold_idx)
+            cat_total[cat] += 1
+
+            # print(f"predicted: {label_texts[pred_idx]} (idx {pred_idx}), label: {label_texts[gold_idx]} (idx {gold_idx}), per-subject-acc:{correct}/{len(rows)}, cat-acc: {cat_correct[cat]}/{cat_total[cat]}")
+
+        acc = correct / max(1, len(rows))
+        per_subject_acc[subj] = acc
+        total_correct += correct
+        total_count += len(rows)
+
+    macro = sum(per_subject_acc[s] for s in subjects) / len(subjects)
+    micro = total_correct / max(1, total_count)
+
+    # Report
+    n_show = 10
+    print("\nPer-subject accuracy (first {} subjects alphabetically):".format(n_show))
+    for s in subjects[:n_show]:
+        print(f"  {s:30s}  {per_subject_acc[s]*100:6.2f}%")
+
+    # per 
+    print(f"\nMacro accuracy over {len(subjects)} subjects: {macro*100:.2f}%")
+    print(f"Micro accuracy over {total_count} questions:  {micro*100:.2f}%")
+
+
+    for cat in cat_total.keys():
+        correct = cat_correct[cat]
+        total = cat_total[cat]
+        acc = correct / max(1, total)
+        print(f"Category: {cat:30s}  Correct: {correct}  Total: {total}  Accuracy: {acc*100:6.2f}% ({correct}/{total})")
+
+if __name__ == "__main__": 
+    main()
