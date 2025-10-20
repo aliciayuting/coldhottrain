@@ -1,311 +1,251 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import os
-import math
-from dataclasses import dataclass
-from typing import Dict, List, Any
-
 import torch
-from datasets import load_dataset, DatasetDict
+from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
-    BitsAndBytesConfig,
-    Trainer,
     TrainingArguments,
-    set_seed,
+    Trainer,
+    DataCollatorForLanguageModeling,
 )
-from peft import (
-    prepare_model_for_kbit_training,
-    LoraConfig,
-    get_peft_model,
-)
-from torch.utils.data import default_collate
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+import transformers
 
 import numpy as np
-# ---------------------------
-# Config
-# ---------------------------
-# MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
-DATASET_ID = "cais/mmlu"        # a.k.a. MMLU
-DATASET_CONFIG = "all"          # bundle of 57 subjects
-USE_LORA = False                 # set False for full finetune
-SEED = 43
-MAX_TOKENS = 768                # prompt+answer max length
-TRAIN_SPLIT = "validation"      # demo: train on val, eval on test
-EVAL_SPLIT = "test"
-OUTPUT_DIR = "./output/out_qwen25_7b_mmlu_lora"
-MAX_TRAIN_SAMPLES = 32
-MAX_EVAL_SAMPLES = 32
-
-# LoRA hyperparams (good starting point)
-LORA_R = 16
-LORA_ALPHA = 32
-LORA_DROPOUT = 0.05
-TARGET_MODULES = [
-    "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
-]
-
-# Trainer hyperparams (tune to your GPU)
-BATCH_TRAIN = 1
-BATCH_EVAL = 1
-GRAD_ACCUM = 1
-LR = 2e-4 if USE_LORA else 1e-5
-NUM_EPOCHS = 1
-WARMUP_RATIO = 0.03
-MAX_STEPS = 5
 
 
-# ---------------------------
-# Utils
-# ---------------------------
-def render_mc_question(q: str, choices: List[str]) -> str:
-    letters = ["A", "B", "C", "D", "E", "F"]
-    lines = [q.strip(), ""]
-    for i, c in enumerate(choices):
-        lines.append(f"{letters[i]}. {c}")
-    lines.append("")
-    lines.append("Choose only one letter (A, B, C, or D).")
-    return "\n".join(lines)
+# Set random seed for reproducibility
+transformers.set_seed(42)
 
+# Configuration
+MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
+# MODEL_NAME = "Qwen/Qwen3-VL-4B-Instruct"
+DATASET = "cais/mmlu"
+OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
+MAX_LENGTH = 512
+BATCH_SIZE = 16
+GRADIENT_ACCUMULATION_STEPS = 2
+LEARNING_RATE = 2e-5
+NUM_EPOCHS = 50
+WARMUP_STEPS = 100
 
-def make_chat_prompt(tokenizer: AutoTokenizer, question: str) -> str:
-    # Qwen Instruct: use chat template so the formatting matches its pretraining
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a helpful assistant. Answer multiple-choice questions "
-                "by outputting exactly one letter: A, B, C, or D."
-            ),
-        },
-        {"role": "user", "content": question},
-    ]
-    return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+# Load tokenizer
+print("Loading tokenizer...")
+tokenizer = AutoTokenizer.from_pretrained(
+    MODEL_NAME,
+    trust_remote_code=True,
+    padding_side="right"
+)
+tokenizer.pad_token = tokenizer.eos_token
 
-LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# Load model
+print("Loading model...")
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.bfloat16,
+    # device_map="auto",
+    trust_remote_code=True,
+)
 
-def to_letter(answer, num_choices=4):
-    """Normalize MMLU answer to 'A'.. based on index or string."""
-    # Integer index (common in cais/mmlu)
-    if isinstance(answer, (int, float)):
-        idx = int(answer)
-        if not (0 <= idx < num_choices):
-            raise ValueError(f"answer index {idx} out of range 0..{num_choices-1}")
-        return LETTERS[idx]
+# Configure LoRA for efficient finetuning
+print("Configuring LoRA...")
+lora_config = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM"
+)
 
-    # String like "A" / "a" / "A." / "2" etc.
-    if isinstance(answer, str):
-        s = answer.strip()
-        if s.isdigit():
-            idx = int(s)
-            if not (0 <= idx < num_choices):
-                raise ValueError(f"answer index {idx} out of range 0..{num_choices-1}")
-            return LETTERS[idx]
-        # take first alpha char and normalize
-        for ch in s:
-            if ch.isalpha():
-                return ch.upper()
-    raise TypeError(f"Unsupported answer type: {type(answer)}: {answer}")
+# model = prepare_model_for_kbit_training(model)
+# model = get_peft_model(model, lora_config)
+# model.print_trainable_parameters()
 
-def build_input_and_labels(tokenizer: AutoTokenizer, prompt: str, answer_letter: str):
-    # We train the model to output just the letter (no extra text).
-    target = answer_letter.strip()
-    full_text = prompt + target
+# Load MMLU dataset
+print("Loading MMLU dataset...")
+dataset = load_dataset(DATASET, "all")
 
-    tok = tokenizer(
-        full_text,
+# Format MMLU data into instruction format
+def format_mmlu_example(example):
+    """Convert MMLU example to instruction-following format"""
+    question = example["question"]
+    choices = example["choices"]
+    answer_idx = example["answer"]
+    
+    # Format choices
+    choice_text = "\n".join([f"{chr(65+i)}. {choice}" for i, choice in enumerate(choices)])
+    
+    # Create instruction-following format
+    prompt = f"""Answer the following multiple choice question.
+
+Question: {question}
+
+Choices:
+{choice_text}
+
+Answer:"""
+    
+    # Get the correct answer letter
+    answer = chr(65 + answer_idx)
+    completion = f" {answer}"
+    
+    # Combine for training
+    full_text = prompt + completion
+    
+    return {"text": full_text}
+
+def tokenize_function(examples):
+    """Tokenize the text data"""
+    outputs = tokenizer(
+        examples["text"],
         truncation=True,
-        max_length=MAX_TOKENS,
-        add_special_tokens=False,
+        max_length=MAX_LENGTH,
+        padding="max_length",
+        return_tensors=None,
     )
-    # Mask the prompt tokens; only learn on the answer letter
-    prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-    labels = [-100] * len(prompt_ids) + tok["input_ids"][len(prompt_ids):]
-    tok["labels"] = labels[:MAX_TOKENS]
-    tok["input_ids"] = tok["input_ids"][:MAX_TOKENS]
-    tok["attention_mask"] = tok["attention_mask"][:MAX_TOKENS]
-    return tok
+    outputs["labels"] = outputs["input_ids"].copy()
+    return outputs
+
+# Process datasets
+print("Processing datasets...")
+train_dataset = dataset["auxiliary_train"].map(format_mmlu_example, remove_columns=dataset["auxiliary_train"].column_names)
+# train_dataset = dataset["test"].map(format_mmlu_example, remove_columns=dataset["test"].column_names)
+val_dataset = dataset["validation"].map(format_mmlu_example, remove_columns=dataset["validation"].column_names)
+# test_dataset = dataset["test"].map(format_mmlu_example, remove_columns=dataset["test"].column_names)
+
+# Tokenize
+train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+val_dataset = val_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+
+# for i, example in enumerate(train_dataset):
+#     if i < 1:
+#         print(f"Example {i}:")
+#         print(f"  Input IDs length: {len(example['input_ids'])}")
+#         print(f"  Labels length: {len(example['labels'])}")
+#         non_ignore_labels = [l for l in example['labels'] if l != -100]
+#         print(f"  Labels (non -100): {non_ignore_labels}")
+#         print(f"  Decoded: {tokenizer.decode(non_ignore_labels)}")
+#         print()
+#         break
 
 
-@dataclass
-class PadCollator:
-    tokenizer: AutoTokenizer
+# for i, example in enumerate(val_dataset):
+#     if i < 1:
+#         print(f"Example {i}:")
+#         print(f"  Input IDs length: {len(example['input_ids'])}")
+#         print(f"  Labels length: {len(example['labels'])}")
+#         non_ignore_labels = [l for l in example['labels'] if l != -100]
+#         print(f"  Labels (non -100): {non_ignore_labels}")
+#         print(f"  Decoded: {tokenizer.decode(non_ignore_labels)}")
+#         print()
+#         break
 
-    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        keys = ["input_ids", "attention_mask", "labels"]
-        # pad manually so labels get padded with -100
-        max_len = max(len(ex["input_ids"]) for ex in batch)
-        input_ids, attn, labels = [], [], []
-        for ex in batch:
-            pad_len = max_len - len(ex["input_ids"])
-            input_ids.append(ex["input_ids"] + [self.tokenizer.pad_token_id] * pad_len)
-            attn.append(ex["attention_mask"] + [0] * pad_len)
-            labels.append(ex["labels"] + [-100] * pad_len)
-        return {
-            "input_ids": torch.tensor(input_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(attn, dtype=torch.long),
-            "labels": torch.tensor(labels, dtype=torch.long),
-        }
+# Data collator
+data_collator = DataCollatorForLanguageModeling(
+    tokenizer=tokenizer,
+    mlm=False,
+)
 
-
-def compute_letter_token_accuracy(eval_preds):
+# CRITICAL: Preprocess logits to only keep the predicted token indices
+def preprocess_logits_for_metrics(logits, labels):
     """
-    We masked all prompt tokens, so accuracy reduces to the
-    last non -100 position(s). For our setup the answer is a single token.
+    Reduce logits to just the argmax predictions to save memory.
+    This is called for each batch before accumulating predictions.
     """
-    logits, labels = eval_preds
-    preds = logits.argmax(-1)
+    # logits shape: (batch_size, seq_length, vocab_size)
+    # We only need the predicted token index, not the full distribution
+    pred_ids = torch.argmax(logits, dim=-1)  # (batch_size, seq_length)
+    return pred_ids
+
+def compute_metrics(eval_pred):
+    """Compute accuracy for MMLU evaluation"""
+    predictions, labels = eval_pred
+    print()
+    # predictions are already argmax'd token IDs from preprocess_logits_for_metrics
+    
+    # Create mask for non-padding/non-masked positions
     mask = labels != -100
-    # keep only positions where labels are not -100
-    correct = (preds[mask] == labels[mask]).sum()
-    total = mask.sum()
-    acc = (correct.astype(np.float32) / total.astype(np.float32)).item() if total > 0 else 0.0
-    return {"letter_acc": acc}
+    
+    # Only compare at positions where we have labels
+    correct = 0
+    total = 0
+    
+    for pred_seq, label_seq, mask_seq in zip(predictions, labels, mask):
+        # Get the last non-masked position (where the answer letter should be)
+        valid_positions = np.where(mask_seq)[0]
+        if len(valid_positions) > 0:
+            # Check the last valid position (the answer)
+            last_pos = valid_positions[-1]
+            if pred_seq[last_pos] == label_seq[last_pos]:
+                correct += 1
+            # print(f"Predicted: {tokenizer.decode(pred_seq[last_pos]).strip()}, Actual: {tokenizer.decode(label_seq[last_pos]).strip()}")
+            total += 1
+    
+    accuracy = correct / total if total > 0 else 0
+    return {"accuracy": accuracy}
 
+# Training arguments with data parallelism
+training_args = TrainingArguments(
+    output_dir=OUTPUT_DIR,
+    num_train_epochs=NUM_EPOCHS,
+    per_device_train_batch_size=BATCH_SIZE,
+    per_device_eval_batch_size=BATCH_SIZE,
+    gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+    learning_rate=LEARNING_RATE,
+    lr_scheduler_type="cosine",
+    warmup_steps=WARMUP_STEPS,
+    save_strategy="epoch",
+    save_steps=1,
+    save_total_limit=1,
+    # eval_strategy="epoch",
+    eval_strategy="steps",
+    eval_steps=1000,
+    fp16=False,
+    bf16=True,
+    optim="adamw_torch",
+    weight_decay=0.01,
+    max_grad_norm=1.0,
+    # Data parallelism settings
+    ddp_find_unused_parameters=False,
+    dataloader_num_workers=4,
+    dataloader_pin_memory=True,
+    resume_from_checkpoint=False,
+    # Reporting
+    # report_to="tensorboard",
+    # load_best_model_at_end=True,
+    # metric_for_best_model="eval_loss",
+    # greater_is_better=False,
+    # max_steps=5,
+    gradient_checkpointing=True,
+    logging_strategy="steps",
+    logging_steps=200,
+    
+)
 
-# ---------------------------
-# Main
-# ---------------------------
-def main():
-    set_seed(SEED)
+# Initialize Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    data_collator=data_collator,
+    compute_metrics=compute_metrics,
+    preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+)
 
-    # Tokenizer
-    tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
-    tok.padding_side = "right"
+# Train
+print("Starting training...")
+trainer.train()
 
-    # Dataset
-    ds: DatasetDict = load_dataset(DATASET_ID, DATASET_CONFIG)
+# Save final model
+print("Saving model...")
+trainer.save_model(OUTPUT_DIR)
+tokenizer.save_pretrained(OUTPUT_DIR)
 
+print("Training complete!")
 
-    def limit(ds_split, n, seed=SEED):
-        if n is None: 
-            return ds_split
-        n = min(n, len(ds_split))
-        return ds_split.shuffle(seed=seed).select(range(n))
-
-    train_raw = limit(ds[TRAIN_SPLIT], MAX_TRAIN_SAMPLES)
-    eval_raw  = limit(ds[EVAL_SPLIT],  MAX_EVAL_SAMPLES)
-
-
-    # MMLU fields: question(str), choices(list[str]), answer(str like "A"/"B"/"C"/"D"), subject(str)
-    # Convert to instruction-following samples
-    def _map_fn(ex):
-        q_text = render_mc_question(ex["question"], ex["choices"])
-        prompt = make_chat_prompt(tok, q_text)
-        # ex["answer"] may be 0..3; convert to 'A'.. first
-        ans_letter = to_letter(ex["answer"], num_choices=len(ex["choices"]))
-        return build_input_and_labels(tok, prompt, ans_letter)
-
-    ds_proc = DatasetDict({
-        "train": train_raw.map(_map_fn, remove_columns=train_raw.column_names),
-        "eval": eval_raw.map(_map_fn, remove_columns=eval_raw.column_names),
-    })
-
-    print(f"Train samples: {len(ds_proc['train'])}, Eval samples: {len(ds_proc['eval'])}")
-
-
-    # Model (QLoRA by default)
-    quant_cfg = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    ) if USE_LORA else None
-
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        torch_dtype=torch.bfloat16,
-        # attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,
-        # device_map="auto",
-        # quantization_config=quant_cfg,
-    )
-
-    if USE_LORA:
-        model = prepare_model_for_kbit_training(model)
-        lconf = LoraConfig(
-            r=LORA_R,
-            lora_alpha=LORA_ALPHA,
-            lora_dropout=LORA_DROPOUT,
-            target_modules=TARGET_MODULES,
-            task_type="CAUSAL_LM",
-            bias="none",
-        )
-        model = get_peft_model(model, lconf)
-        model.print_trainable_parameters()
-    else:
-        # full finetune: make sure you have enough GPU memory
-        for p in model.parameters():
-            p.requires_grad_(True)
-
-    # Trainer
-    args = TrainingArguments(
-        output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=BATCH_TRAIN,
-        per_device_eval_batch_size=BATCH_EVAL,
-        gradient_accumulation_steps=GRAD_ACCUM,
-        learning_rate=LR,
-        num_train_epochs=NUM_EPOCHS,
-        warmup_ratio=WARMUP_RATIO,
-        weight_decay=0.0,
-        logging_steps=1,
-        eval_strategy="steps",
-        eval_steps=1,
-        save_strategy="no",
-        # save_strategy="steps",
-        save_steps=200,
-        save_total_limit=2,
-        bf16=True,
-        lr_scheduler_type="cosine",
-        gradient_checkpointing=True,
-        report_to=[],
-        max_steps=MAX_STEPS,
-        overwrite_output_dir=True,
-        # resume_from_checkpoint="no",
-        ddp_backend="nccl",               # default on Linux + NVIDIA
-        ddp_find_unused_parameters=False,
-    )
-
-    trainer = Trainer(
-        model=model,
-        args=args,
-        train_dataset=ds_proc["train"],
-        eval_dataset=ds_proc["eval"],
-        tokenizer=tok,
-        data_collator=PadCollator(tok),
-        compute_metrics=compute_letter_token_accuracy,
-
-    )
-
-    trainer.train()
-
-    # Save (merging LoRA into a single HF model if desired)
-    if USE_LORA:
-        # Adapter-only:
-        adapter_dir = os.path.join(OUTPUT_DIR, "lora_adapter")
-        model.save_pretrained(adapter_dir)
-        print(f"Saved LoRA adapter to: {adapter_dir}")
-
-        # Optional: merge weights for easy deployment
-        try:
-            merged = model.merge_and_unload()
-            merged.save_pretrained(os.path.join(OUTPUT_DIR, "merged"))
-            tok.save_pretrained(os.path.join(OUTPUT_DIR, "merged"))
-            print("Saved merged model.")
-        except Exception as e:
-            print(f"Skip merge (ok for training-only use). Reason: {e}")
-    else:
-        model.save_pretrained(OUTPUT_DIR)
-        tok.save_pretrained(OUTPUT_DIR)
-        print(f"Saved full model to: {OUTPUT_DIR}")
-
-
-if __name__ == "__main__":
-    main()
+# # Optional: Evaluate on test set
+# print("\nEvaluating on test set...")
+# test_results = trainer.evaluate(test_dataset)
+# print(f"Test results: {test_results}")
