@@ -26,9 +26,9 @@ MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 DATASET = "cais/mmlu"
 OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
 MAX_LENGTH = 768
-BATCH_SIZE = 1
-GRADIENT_ACCUMULATION_STEPS = 1
-LEARNING_RATE = 1e-4
+BATCH_SIZE = 16
+GRADIENT_ACCUMULATION_STEPS = 2
+LEARNING_RATE = 5e-5
 NUM_EPOCHS = 50
 WARMUP_STEPS = 100
 
@@ -70,9 +70,9 @@ print("Loading MMLU dataset...")
 dataset = load_dataset(DATASET, "all")
 train_dataset = dataset["auxiliary_train"]
 eval_dataset = dataset["test"]
-# truncate datasets for quick debugging (remove in real training)
-train_dataset = train_dataset.select(range(2))
-eval_dataset = eval_dataset.select(range(2))
+# # truncate datasets for quick debugging (remove in real training)
+# train_dataset = train_dataset.select(range(2))
+# eval_dataset = eval_dataset.select(range(2))
 
 # Format MMLU data into instruction format
 def format_mmlu_example(example):
@@ -100,7 +100,7 @@ Answer:"""
     full_text = prompt + answer
     
     return {"prompt": prompt, 
-            "answer": answer,
+            "label": answer,
             "full_text": full_text}
 
 
@@ -150,7 +150,7 @@ def show_dataset_example(dataset, num_examples=1):
             break
         print(f"--- Example {i}: ---")
         print(f"### Prompt:\n{dataset[i]['prompt']}")
-        print(f"### Answer:\n{dataset[i]['answer']}")
+        print(f"### Label:\n{dataset[i]['label']}")
         print()
 
 
@@ -165,8 +165,8 @@ show_dataset_example(train_dataset, num_examples=2)
 
 # Tokenize
 print("Tokenizing datasets...")
-train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["prompt", "answer"])
-eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["prompt", "answer"])
+train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["prompt", "label"])
+eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["prompt", "label"])
 
 def show_tokenized_dataset_examples(dataset, num_examples=2):
     for i in range(len(dataset)):
@@ -325,7 +325,7 @@ training_args = TrainingArguments(
     save_total_limit=1,
     # eval_strategy="epoch",
     eval_strategy="steps",
-    eval_steps=1,
+    eval_steps=100,
     fp16=False,
     bf16=True,
     optim="adamw_torch",
@@ -341,10 +341,10 @@ training_args = TrainingArguments(
     # load_best_model_at_end=True,
     # metric_for_best_model="eval_loss",
     # greater_is_better=False,
-    max_steps=1,
+    # max_steps=1,
     gradient_checkpointing=True,
     logging_strategy="steps",
-    logging_steps=200,
+    logging_steps=100,
     
 )
 
@@ -359,11 +359,10 @@ trainer = Trainer(
     preprocess_logits_for_metrics=preprocess_logits_for_metrics,
 )
 
-# # Train
-# print("Starting training...")
-# trainer.train()
+# Train
+print("Starting training...")
+trainer.train()
 
-trainer.evaluate()
 
 # Save final model
 print("Saving model...")
