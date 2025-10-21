@@ -20,7 +20,7 @@ MODEL_NAME = "luffycodes/vicuna-mmlu-val-only-correct-mcq-7b-ep2"  # 7B model
 DATASET = "cais/mmlu"
 OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
 MAX_LENGTH = 768
-BATCH_SIZE = 8  # Reduced for 7B model (safer with larger model)
+BATCH_SIZE = 4  # Reduced for 7B model (safer with larger model)
 
 # ---------- Tokenizer ----------
 print("Loading tokenizer...")
@@ -103,13 +103,29 @@ eval_dataset = eval_dataset.map(
 
 # ---------- 4-choice setup ----------
 CHOICES = [" A", " B", " C", " D"]
-CHOICE_TOKEN_IDS = []
+CHOICE_TOKEN_IDS_LIST = []  # List of token sequences
 for s in CHOICES:
     ids = tokenizer.encode(s, add_special_tokens=False)
-    assert len(ids) == 1, f"Choice token '{s}' did not encode to a single token: {ids}"
-    CHOICE_TOKEN_IDS.append(ids[0])
-CHOICE_TOKEN_IDS = torch.tensor(CHOICE_TOKEN_IDS, dtype=torch.long)
-print(f"Choice token IDs: {CHOICE_TOKEN_IDS.tolist()}")
+    CHOICE_TOKEN_IDS_LIST.append(ids)
+
+# Check if single token or multi-token
+SINGLE_TOKEN = all(len(ids) == 1 for ids in CHOICE_TOKEN_IDS_LIST)
+
+if SINGLE_TOKEN:
+    CHOICE_TOKEN_IDS = torch.tensor([ids[0] for ids in CHOICE_TOKEN_IDS_LIST], dtype=torch.long)
+    print(f"Choice tokens are SINGLE tokens")
+    print(f"Choice token IDs: {CHOICE_TOKEN_IDS.tolist()}")
+else:
+    print(f"Choice tokens are MULTI-TOKEN")
+    print(f"Choice token sequences: {CHOICE_TOKEN_IDS_LIST}")
+    # For multi-token where first token is space, use the SECOND token (the actual letter)
+    if all(len(ids) >= 2 for ids in CHOICE_TOKEN_IDS_LIST):
+        CHOICE_TOKEN_IDS = torch.tensor([ids[1] for ids in CHOICE_TOKEN_IDS_LIST], dtype=torch.long)
+        print(f"Using second token (actual letter): {CHOICE_TOKEN_IDS.tolist()}")
+        print(f"Decoded: {[tokenizer.decode([tid]) for tid in CHOICE_TOKEN_IDS.tolist()]}")
+    else:
+        raise ValueError("Multi-token choices don't have consistent 2-token structure")
+    print("⚠️  Note: This assumes answer format is always ' X' (space + letter)")
 
 # ---------- Helpers for metrics ----------
 def _first_answer_pos(labels: torch.Tensor) -> torch.Tensor:
@@ -166,50 +182,97 @@ def compute_metrics(eval_pred):
     print("\n" + "="*80)
     print("CHECKING ALL PREDICTIONS AND LABELS")
     print("="*80)
-    print(f"Expected choice token IDs: {CHOICE_TOKEN_IDS.tolist()}")
-    print(f"Expected tokens: {[tokenizer.decode([tid]) for tid in CHOICE_TOKEN_IDS.tolist()]}")
+    print(f"Expected choice tokens: {CHOICES}")
+    if SINGLE_TOKEN:
+        print(f"Expected token IDs: {CHOICE_TOKEN_IDS.tolist()}")
+        print(f"Decoded: {[tokenizer.decode([tid]) for tid in CHOICE_TOKEN_IDS.tolist()]}")
+    else:
+        print(f"Expected token sequences: {CHOICE_TOKEN_IDS_LIST}")
+        print(f"Using letter tokens: {CHOICE_TOKEN_IDS.tolist()}")
+        print(f"Decoded letters: {[tokenizer.decode([tid]) for tid in CHOICE_TOKEN_IDS.tolist()]}")
     print("="*80)
     
     invalid_cases = []
+    format_issues = []
     
     for i in range(len(pred_idx)):
         # Convert index to letter
-        pred_letter = chr(65 + pred_idx[i])      # 0→A, 1→B, 2→C, 3→D
-        gold_letter = chr(65 + gold_idx[i])      # 0→A, 1→B, 2→C, 3→D
+        pred_letter = chr(65 + pred_idx[i])
+        gold_letter = chr(65 + gold_idx[i])
         
-        # Check if valid
-        pred_valid = pred_letter in ['A', 'B', 'C', 'D']
-        gold_valid_check = gold_valid[i]  # Check if actual token matches expected tokens
+        # Check if label token is valid
+        gold_valid_check = gold_valid[i]
         
-        # Store if label is invalid (prediction should always be valid since we argmax over 4 choices)
+        # For invalid cases, decode the actual label tokens from the dataset
         if not gold_valid_check:
-            # Get the actual token ID from labels
-            actual_token_id = gold_token_ids[i].item()
-            actual_token_decoded = tokenizer.decode([actual_token_id]) if actual_token_id >= 0 else "N/A"
+            # Find the answer position in labels
+            label_tensor = torch.tensor(label_ids[i])
+            ans_positions = torch.where(label_tensor != -100)[0]
             
-            invalid_cases.append({
-                'index': i,
-                'pred_letter': pred_letter,
-                'gold_letter': gold_letter,
-                'actual_token_id': actual_token_id,
-                'actual_token_decoded': actual_token_decoded,
-                'gold_valid': gold_valid_check
-            })
+            if len(ans_positions) > 0:
+                # Get all non-masked label tokens
+                actual_token_ids = [label_ids[i][pos] for pos in ans_positions.tolist()]
+                actual_decoded = tokenizer.decode(actual_token_ids)
+                
+                invalid_cases.append({
+                    'index': i,
+                    'pred_letter': pred_letter,
+                    'gold_letter': gold_letter,
+                    'actual_token_ids': actual_token_ids,
+                    'actual_decoded': actual_decoded,
+                    'gold_valid': gold_valid_check
+                })
+            else:
+                invalid_cases.append({
+                    'index': i,
+                    'pred_letter': pred_letter,
+                    'gold_letter': gold_letter,
+                    'actual_token_ids': [],
+                    'actual_decoded': 'NO_TOKENS',
+                    'gold_valid': gold_valid_check
+                })
+        else:
+            # Even for valid cases, verify format in first few examples
+            if i < 10:
+                label_tensor = torch.tensor(label_ids[i])
+                ans_positions = torch.where(label_tensor != -100)[0]
+                if len(ans_positions) > 0:
+                    actual_token_ids = [label_ids[i][pos] for pos in ans_positions.tolist()]
+                    actual_decoded = tokenizer.decode(actual_token_ids)
+                    expected_decoded = f" {gold_letter}"
+                    
+                    if actual_decoded != expected_decoded:
+                        format_issues.append({
+                            'index': i,
+                            'expected': expected_decoded,
+                            'actual': actual_decoded,
+                            'token_ids': actual_token_ids
+                        })
     
-    # Print results
+    # Print format check for first 10
+    if format_issues:
+        print(f"\n⚠️  FORMAT ISSUES in first 10 examples:\n")
+        for issue in format_issues:
+            print(f"Example {issue['index']}: Expected='{issue['expected']}' "
+                  f"Got='{issue['actual']}' Token IDs={issue['token_ids']}")
+        print()
+    else:
+        print(f"\n✓ First 10 examples have correct format (space + letter)\n")
+    
+    # Print invalid cases
     if invalid_cases:
-        print(f"\n⚠️  FOUND {len(invalid_cases)} INVALID LABEL CASES:\n")
-        print("These labels have token IDs that don't match [' A', ' B', ' C', ' D']\n")
-        for case in invalid_cases[:20]:  # Show first 20
+        print(f"⚠️  FOUND {len(invalid_cases)} INVALID LABEL CASES:\n")
+        print("These labels don't match expected choice tokens\n")
+        for case in invalid_cases[:20]:
             print(f"Example {case['index']:5d}: "
-                  f"Actual token ID={case['actual_token_id']:6d} "
-                  f"Decoded='{case['actual_token_decoded']}'  |  "
-                  f"Expected one of {CHOICE_TOKEN_IDS.tolist()}  |  "
+                  f"Expected one of {CHOICES}  |  "
+                  f"Got='{case['actual_decoded']}' "
+                  f"Token IDs={case['actual_token_ids']}  |  "
                   f"Prediction={case['pred_letter']}")
         if len(invalid_cases) > 20:
             print(f"\n... and {len(invalid_cases) - 20} more invalid cases")
     else:
-        print("\n✓ ALL LABELS ARE VALID (match expected token IDs for A, B, C, D)")
+        print("✓ ALL LABELS ARE VALID (match expected tokens)")
     
     print("\n" + "="*80)
     print(f"Total examples checked: {len(pred_idx)}")
