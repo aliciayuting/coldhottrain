@@ -162,12 +162,13 @@ def compute_metrics(eval_pred):
 
     acc = accuracy_score(gold_idx[gold_valid], pred_idx[gold_valid]) if gold_valid.any() else 0.0
 
-    # ========== SIMPLIFIED OUTPUT: Just show predictions and labels ==========
     print("\n" + "="*80)
-    print("CHECKING PREDICTIONS AND LABELS (First 20 examples)")
+    print("CHECKING ALL PREDICTIONS AND LABELS")
     print("="*80)
     
-    for i in range(min(20, len(pred_idx))):
+    invalid_cases = []
+    
+    for i in range(len(pred_idx)):
         # Convert index to letter
         pred_letter = chr(65 + pred_idx[i])      # 0→A, 1→B, 2→C, 3→D
         gold_letter = chr(65 + gold_idx[i])      # 0→A, 1→B, 2→C, 3→D
@@ -175,13 +176,30 @@ def compute_metrics(eval_pred):
         # Check if valid
         pred_valid = pred_letter in ['A', 'B', 'C', 'D']
         gold_valid_check = gold_letter in ['A', 'B', 'C', 'D'] and gold_valid[i]
-        match = pred_idx[i] == gold_idx[i]
         
-        print(f"Example {i:3d}: Prediction={pred_letter} (valid={pred_valid})  |  "
-              f"Label={gold_letter} (valid={gold_valid_check})  |  "
-              f"Match={'✓' if match else '✗'}")
+        # Store if either is invalid
+        if not pred_valid or not gold_valid_check:
+            invalid_cases.append({
+                'index': i,
+                'pred_letter': pred_letter,
+                'pred_valid': pred_valid,
+                'gold_letter': gold_letter,
+                'gold_valid': gold_valid_check
+            })
     
-    print("="*80)
+    # Print results
+    if invalid_cases:
+        print(f"\n⚠️  FOUND {len(invalid_cases)} INVALID CASES:\n")
+        for case in invalid_cases:
+            print(f"Example {case['index']:3d}: "
+                  f"Prediction={case['pred_letter']} (valid={case['pred_valid']})  |  "
+                  f"Label={case['gold_letter']} (valid={case['gold_valid']})")
+    else:
+        print("\n✓ ALL PREDICTIONS AND LABELS ARE VALID (A, B, C, or D)")
+    
+    print("\n" + "="*80)
+    print(f"Total examples checked: {len(pred_idx)}")
+    print(f"Invalid predictions/labels: {len(invalid_cases)}")
     print(f"Overall Accuracy: {acc:.4f} ({acc*100:.2f}%)")
     print("="*80 + "\n")
 
