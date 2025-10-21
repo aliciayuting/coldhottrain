@@ -94,41 +94,124 @@ Answer:"""
     # Combine for training
     full_text = prompt + completion
     
-    return {"text": full_text}
+    return {"text": full_text, "prompt": prompt}
+
+# def tokenize_function(examples):
+#     """Tokenize the text data"""
+#     outputs = tokenizer(
+#         examples["text"],
+#         truncation=True,
+#         max_length=MAX_LENGTH,
+#         padding="max_length",
+#         return_tensors=None,
+#         add_special_tokens=False,
+#     )
+#     outputs["labels"] = outputs["input_ids"].copy()
+#     return output
+
+
+# def tokenize_function(examples):
+#     enc = tokenizer(
+#         examples["text"],
+#         truncation=True,
+#         max_length=MAX_LENGTH,
+#         padding="max_length",
+#         add_special_tokens=False,
+#     )
+
+#     # Copy labels from input_ids
+#     labels = [seq.copy() for seq in enc["input_ids"]]
+
+#     # Replace padding positions (attention_mask==0) with -100 so they don't count in loss
+#     for i, mask in enumerate(enc["attention_mask"]):
+#         for j, m in enumerate(mask):
+#             if m == 0:
+#                 labels[i][j] = -100
+
+#     enc["labels"] = labels
+#     return enc
+
 
 def tokenize_function(examples):
-    """Tokenize the text data"""
-    outputs = tokenizer(
+    # Tokenize the full input (prompt + answer letter)
+    enc = tokenizer(
         examples["text"],
         truncation=True,
         max_length=MAX_LENGTH,
         padding="max_length",
-        return_tensors=None,
+        add_special_tokens=False,
     )
-    outputs["labels"] = outputs["input_ids"].copy()
-    return outputs
+
+    # Tokenize prompts alone to get where the answer starts
+    enc_prompt = tokenizer(
+        examples["prompt"],
+        truncation=True,
+        max_length=MAX_LENGTH,
+        padding=False,              # no padding here; we want true lengths
+        add_special_tokens=False,
+    )
+    prompt_lens = [len(x) for x in enc_prompt["input_ids"]]
+
+    # Start with labels = input_ids
+    labels = [seq.copy() for seq in enc["input_ids"]]
+
+    # (1) Ignore padding in loss
+    for i, mask in enumerate(enc["attention_mask"]):
+        for j, m in enumerate(mask):
+            if m == 0:
+                labels[i][j] = -100
+
+    # (2) Ignore the prompt part in loss; keep only the answer tokens
+    for i, plen in enumerate(prompt_lens):
+        upto = min(plen, len(labels[i]))
+        for j in range(upto):
+            if labels[i][j] != -100:   # don’t touch already-padded positions
+                labels[i][j] = -100
+
+    enc["labels"] = labels
+    return enc
+
+
+
 
 # Process datasets
 print("Processing datasets...")
 # train_dataset = dataset["auxiliary_train"].map(format_mmlu_example, remove_columns=dataset["auxiliary_train"].column_names)
 train_dataset = dataset["test"].map(format_mmlu_example, remove_columns=dataset["test"].column_names)
-val_dataset = dataset["validation"].map(format_mmlu_example, remove_columns=dataset["validation"].column_names)
+# val_dataset = dataset["validation"].map(format_mmlu_example, remove_columns=dataset["validation"].column_names)
 # test_dataset = dataset["test"].map(format_mmlu_example, remove_columns=dataset["test"].column_names)
 
-# Tokenize
-train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-val_dataset = val_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+# print out train datase examples for debugging
+for i in range(1):
+    print(f"Train example {i}:")
+    print(train_dataset[i]["text"])
+    print()
 
-# for i, example in enumerate(train_dataset):
-#     if i < 1:
-#         print(f"Example {i}:")
-#         print(f"  Input IDs length: {len(example['input_ids'])}")
-#         print(f"  Labels length: {len(example['labels'])}")
-#         non_ignore_labels = [l for l in example['labels'] if l != -100]
-#         print(f"  Labels (non -100): {non_ignore_labels}")
-#         print(f"  Decoded: {tokenizer.decode(non_ignore_labels)}")
-#         print()
-#         break
+# exit()
+
+# Tokenize
+print("Tokenizing datasets...")
+train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+# val_dataset = val_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+
+for i, example in enumerate(train_dataset):
+    if i > 1:
+        break
+    print(f"Example {i}:")
+    print(f"  Input IDs length: {len(example['input_ids'])}")
+    print(f"  Labels length: {len(example['labels'])}")
+    non_ignore_labels = [l for l in example['labels'] if l != -100]
+    print(f"  Labels (non -100): {non_ignore_labels}")
+    print(f"  Decoded: {tokenizer.decode(non_ignore_labels)}")
+
+    labels = example['labels']
+    print(f"  Labels: {labels}")
+    print(f"  Decoded: {tokenizer.decode(labels)}")
+
+
+    print()
+
+exit()
 
 
 # for i, example in enumerate(val_dataset):
