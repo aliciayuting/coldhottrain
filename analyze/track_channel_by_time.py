@@ -27,12 +27,12 @@ DEFAULT_BOTTOM_K        = 50
 DEFAULT_STEPS = None  # None = auto-detect all available steps
 
 # Aggregation: 'row' or 'col' for each matrix type
-DEFAULT_MLP_UP_DIM      = "row"    # up_proj: row = channel (d_hidden)
-DEFAULT_MLP_DOWN_DIM    = "row"    # down_proj: col = channel (d_hidden)
-DEFAULT_MLP_GATE_DIM    = "row"    # gate_proj: row = channel (d_hidden)
-DEFAULT_MHA_Q_DIM       = "row"    # q_proj: row = head output
-DEFAULT_MHA_K_DIM       = "row"    # k_proj: row = head output
-DEFAULT_MHA_V_DIM       = "row"    # v_proj: row = head output
+DEFAULT_MLP_UP_DIM      = "col"    # up_proj: row = channel (d_hidden)
+DEFAULT_MLP_DOWN_DIM    = "col"    # down_proj: col = channel (d_hidden)
+DEFAULT_MLP_GATE_DIM    = "col"    # gate_proj: row = channel (d_hidden)
+DEFAULT_MHA_Q_DIM       = "col"    # q_proj: row = head output
+DEFAULT_MHA_K_DIM       = "col"    # k_proj: row = head output
+DEFAULT_MHA_V_DIM       = "col"    # v_proj: row = head output
 DEFAULT_MHA_O_DIM       = "col"    # o_proj: col = head input
 
 # Visualization options
