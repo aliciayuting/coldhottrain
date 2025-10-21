@@ -20,7 +20,7 @@ MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 DATASET = "cais/mmlu"
 OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
 MAX_LENGTH = 768
-BATCH_SIZE = 4
+BATCH_SIZE = 16
 
 # ---------- Tokenizer ----------
 print("Loading tokenizer...")
@@ -162,8 +162,12 @@ def compute_metrics(eval_pred):
 
     acc = accuracy_score(gold_idx[gold_valid], pred_idx[gold_valid]) if gold_valid.any() else 0.0
 
+    # ========== CHECK ALL EXAMPLES FOR INVALID PREDICTIONS/LABELS ==========
     print("\n" + "="*80)
     print("CHECKING ALL PREDICTIONS AND LABELS")
+    print("="*80)
+    print(f"Expected choice token IDs: {CHOICE_TOKEN_IDS.tolist()}")
+    print(f"Expected tokens: {[tokenizer.decode([tid]) for tid in CHOICE_TOKEN_IDS.tolist()]}")
     print("="*80)
     
     invalid_cases = []
@@ -175,31 +179,41 @@ def compute_metrics(eval_pred):
         
         # Check if valid
         pred_valid = pred_letter in ['A', 'B', 'C', 'D']
-        gold_valid_check = gold_letter in ['A', 'B', 'C', 'D'] and gold_valid[i]
+        gold_valid_check = gold_valid[i]  # Check if actual token matches expected tokens
         
-        # Store if either is invalid
-        if not pred_valid or not gold_valid_check:
+        # Store if label is invalid (prediction should always be valid since we argmax over 4 choices)
+        if not gold_valid_check:
+            # Get the actual token ID from labels
+            actual_token_id = gold_token_ids[i].item()
+            actual_token_decoded = tokenizer.decode([actual_token_id]) if actual_token_id >= 0 else "N/A"
+            
             invalid_cases.append({
                 'index': i,
                 'pred_letter': pred_letter,
-                'pred_valid': pred_valid,
                 'gold_letter': gold_letter,
+                'actual_token_id': actual_token_id,
+                'actual_token_decoded': actual_token_decoded,
                 'gold_valid': gold_valid_check
             })
     
     # Print results
     if invalid_cases:
-        print(f"\n⚠️  FOUND {len(invalid_cases)} INVALID CASES:\n")
-        for case in invalid_cases:
-            print(f"Example {case['index']:3d}: "
-                  f"Prediction={case['pred_letter']} (valid={case['pred_valid']})  |  "
-                  f"Label={case['gold_letter']} (valid={case['gold_valid']})")
+        print(f"\n⚠️  FOUND {len(invalid_cases)} INVALID LABEL CASES:\n")
+        print("These labels have token IDs that don't match [' A', ' B', ' C', ' D']\n")
+        for case in invalid_cases[:20]:  # Show first 20
+            print(f"Example {case['index']:5d}: "
+                  f"Actual token ID={case['actual_token_id']:6d} "
+                  f"Decoded='{case['actual_token_decoded']}'  |  "
+                  f"Expected one of {CHOICE_TOKEN_IDS.tolist()}  |  "
+                  f"Prediction={case['pred_letter']}")
+        if len(invalid_cases) > 20:
+            print(f"\n... and {len(invalid_cases) - 20} more invalid cases")
     else:
-        print("\n✓ ALL PREDICTIONS AND LABELS ARE VALID (A, B, C, or D)")
+        print("\n✓ ALL LABELS ARE VALID (match expected token IDs for A, B, C, D)")
     
     print("\n" + "="*80)
     print(f"Total examples checked: {len(pred_idx)}")
-    print(f"Invalid predictions/labels: {len(invalid_cases)}")
+    print(f"Invalid labels: {len(invalid_cases)}")
     print(f"Overall Accuracy: {acc:.4f} ({acc*100:.2f}%)")
     print("="*80 + "\n")
 
