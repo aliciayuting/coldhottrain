@@ -22,7 +22,7 @@ DATASET = "cais/mmlu"
 OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
 OUTPUT_PRED_DEBUG_DIR = "./mmlu_eval_debug"
 MAX_LENGTH = 768
-BATCH_SIZE = 16
+BATCH_SIZE = 4
 
 # ---------- Tokenizer ----------
 print("Loading tokenizer...")
@@ -64,13 +64,16 @@ def format_mmlu_example(example):
     )
     answer = f" {chr(65 + answer_idx)}"
     full_text = prompt + answer
-    original_questions.append({
-        "question": question,
-        "choices": choices,
-        "correct_answer_idx": answer_idx,
-        "correct_answer_letter": chr(65 + answer_idx)
-    })
-    return {"prompt": prompt, "answer": answer, "full_text": full_text}
+    return {
+        "prompt": prompt,
+        "answer": answer,
+        "full_text": full_text,
+        "original_question": question,              # NEW: Store question
+        "original_choices": choices,                # NEW: Store choices
+        "correct_answer_idx": answer_idx,           # NEW: Store answer index
+        "correct_answer_letter": chr(65 + answer_idx)  # NEW: Store answer letter
+    }
+
 
 print("Formatting eval dataset...")
 eval_dataset = eval_dataset.map(format_mmlu_example, remove_columns=eval_dataset.column_names)
@@ -106,6 +109,12 @@ def tokenize_function(examples):
             if labels[i][j] != -100:
                 labels[i][j] = -100
     enc["labels"] = labels
+
+    enc["original_question"] = examples["original_question"]      # NEW: Preserve
+    enc["original_choices"] = examples["original_choices"]        # NEW: Preserve
+    enc["correct_answer_idx"] = examples["correct_answer_idx"]    # NEW: Preserve
+    enc["correct_answer_letter"] = examples["correct_answer_letter"]  # NEW: Preserve
+    
     return enc
 
 print("Tokenizing eval dataset...")
@@ -211,49 +220,78 @@ def compute_metrics(eval_pred):
     print("\n" + "="*80)
     print("DETAILED PREDICTION RESULTS")
     print("="*80 + "\n")
-
-    for i in range(len(pred_idx)):
+    for i in range(min(5, len(pred_idx))):
         pred_letter = chr(65 + pred_idx[i])
         gold_letter = chr(65 + gold_idx[i])
         is_correct = pred_idx[i] == gold_idx[i] if gold_valid[i] else False
         
-        result = {
-            "index": i,
-            "question": original_questions[i]["question"],
-            "choices": original_questions[i]["choices"],
-            "predicted_answer": pred_letter,
-            "correct_answer": gold_letter,
-            "is_correct": is_correct,
-            "logits": four_logits[i].tolist()
-        }
-        all_predictions.append(result)
-        
-        # Print detailed results
-        if i < 10 or not is_correct:  # Print first 10 and all incorrect
-            print(f"Example {i}:")
-            print(f"Question: {original_questions[i]['question']}")
-            print("Choices:")
-            for j, choice in enumerate(original_questions[i]['choices']):
-                marker = "→" if j == pred_idx[i] else " "
-                correct_marker = "✓" if j == gold_idx[i] else " "
-                print(f"  {marker} {correct_marker} {chr(65+j)}. {choice}")
-            print(f"Predicted: {pred_letter} | Correct: {gold_letter} | {'✓ CORRECT' if is_correct else '✗ INCORRECT'}")
-            print("-" * 80 + "\n")
+        print(f"Example {i}: Predicted: {pred_letter} | Correct: {gold_letter} | {'✓' if is_correct else '✗'}")
     
-    # Summary statistics
-    correct_count = sum(1 for p in all_predictions if p["is_correct"])
-    total_count = len(all_predictions)
-    
-    print("\n" + "="*80)
-    print("SUMMARY")
-    print("="*80)
-    print(f"Total questions: {total_count}")
-    print(f"Correct: {correct_count}")
-    print(f"Incorrect: {total_count - correct_count}")
-    print(f"Accuracy: {acc:.4f} ({acc*100:.2f}%)")
-    print("="*80 + "\n")
 
     return {"accuracy": acc}
+
+
+class MMOLUTrainer(Trainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.all_predictions = []
+    
+    def evaluation_loop(self, dataloader, description, prediction_loss_only=None, ignore_keys=None, metric_key_prefix="eval"):
+        # Call parent evaluation
+        output = super().evaluation_loop(dataloader, description, prediction_loss_only, ignore_keys, metric_key_prefix)
+        
+        # Now collect all predictions with original questions
+        print("\n" + "="*80)
+        print("DETAILED PREDICTION RESULTS")
+        print("="*80 + "\n")
+        
+        pred_idx = output.predictions.argmax(axis=1)
+        
+
+        self.all_predictions = []
+        for i, example in enumerate(self.eval_dataset):
+            pred_letter = chr(65 + pred_idx[i])
+            gold_letter = example["correct_answer_letter"]  # Access from dataset
+            gold_idx = example["correct_answer_idx"]        # Access from dataset
+            is_correct = pred_idx[i] == gold_idx
+            
+            result = {
+                "index": i,
+                "question": example["original_question"],
+                "choices": example["original_choices"],
+                "predicted_answer": pred_letter,
+                "correct_answer": gold_letter,
+                "is_correct": bool(is_correct),
+                "logits": output.predictions[i].tolist()
+            }
+            self.all_predictions.append(result)
+            
+            # Print first 10 and all incorrect
+            if i < 10 or not is_correct:
+                print(f"Example {i}:")
+                print(f"Question: {example['original_question']}")
+                print("Choices:")
+                for j, choice in enumerate(example["original_choices"]):
+                    marker = "→" if j == pred_idx[i] else " "
+                    correct_marker = "✓" if j == gold_idx else " "
+                    print(f"  {marker} {correct_marker} {chr(65+j)}. {choice}")
+                print(f"Predicted: {pred_letter} | Correct: {gold_letter} | {'✓ CORRECT' if is_correct else '✗ INCORRECT'}")
+                print("-" * 80 + "\n")
+        
+        # Summary
+        correct_count = sum(1 for p in self.all_predictions if p["is_correct"])
+        total_count = len(self.all_predictions)
+        
+        print("\n" + "="*80)
+        print("SUMMARY")
+        print("="*80)
+        print(f"Total questions: {total_count}")
+        print(f"Correct: {correct_count}")
+        print(f"Incorrect: {total_count - correct_count}")
+        print(f"Accuracy: {output.metrics[f'{metric_key_prefix}_accuracy']:.4f} ({output.metrics[f'{metric_key_prefix}_accuracy']*100:.2f}%)")
+        print("="*80 + "\n")
+        
+        return output
 
 # ---------- Data collator ----------
 data_collator = default_data_collator
@@ -272,7 +310,16 @@ training_args = TrainingArguments(
 )
 
 # ---------- Trainer (eval only) ----------
-trainer = Trainer(
+# trainer = Trainer(
+#     model=model,
+#     args=training_args,
+#     eval_dataset=eval_dataset,
+#     data_collator=data_collator,
+#     compute_metrics=compute_metrics,
+#     preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+# )
+
+trainer = MMOLUTrainer(
     model=model,
     args=training_args,
     eval_dataset=eval_dataset,
@@ -294,7 +341,7 @@ with open(output_file, 'w') as f:
         "model": MODEL_NAME,
         "dataset": DATASET,
         "accuracy": metrics["eval_accuracy"],
-        "total_examples": len(all_predictions),
-        "predictions": all_predictions
+        "total_examples": len(trainer.all_predictions),
+        "predictions": trainer.all_predictions
     }, f, indent=2)
 print(f"\nPredictions saved to: {output_file}")
