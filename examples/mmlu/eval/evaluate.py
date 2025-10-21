@@ -11,7 +11,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 
-from category import subcategories, categories, subject_to_categories
+from category import subcategories, categories, subject_to_category
 
 # ---------------------------
 # Config
@@ -183,19 +183,11 @@ def main():
     total_correct = 0
     total_count = 0
 
-
-    debug_thres = 20
-    debug_count = 0
-
     cat_correct = defaultdict(int)
     cat_total = defaultdict(int)
 
-
-    subj_to_cats = subject_to_categories()
-
-    print(subj_to_cats)
     for subj in subjects:
-        cat = subj_to_cats.get(subj, ["Unknown"])[0]
+        cat = subject_to_category(subj)
         if cat not in cat_correct:
             cat_correct[cat] = 0
             cat_total[cat] = 0
@@ -234,21 +226,22 @@ def main():
     micro = total_correct / max(1, total_count)
 
     # Report
-    n_show = 10
-    print("\nPer-subject accuracy (first {} subjects alphabetically):".format(n_show))
-    for s in subjects[:n_show]:
-        print(f"  {s:30s}  {per_subject_acc[s]*100:6.2f}%")
+    # n_show = 10
+    # print("\nPer-subject accuracy (first {} subjects alphabetically):".format(n_show))
+    # for s in subjects[:n_show]:
+    #     print(f"  {s:30s}  {per_subject_acc[s]*100:6.2f}%")
 
-    # per 
-    print(f"\nMacro accuracy over {len(subjects)} subjects: {macro*100:.2f}%")
-    print(f"Micro accuracy over {total_count} questions:  {micro*100:.2f}%")
+    # # per 
+    # print(f"\nMacro accuracy over {len(subjects)} subjects: {macro*100:.2f}%")
+    # print(f"Micro accuracy over {total_count} questions:  {micro*100:.2f}%")
 
 
     for cat in cat_total.keys():
         correct = cat_correct[cat]
         total = cat_total[cat]
         acc = correct / max(1, total)
-        print(f"Category: {cat:30s}  Correct: {correct}  Total: {total}  Accuracy: {acc*100:6.2f}% ({correct}/{total})")
+        print(f"Category: {cat:35s} Accuracy: {acc*100:6.2f}% ({correct}/{total})")
+    print(f"Overall: Accuracy: {total_correct/total_count*100:.2f}% ({total_correct}/{total_count})")
 
 if __name__ == "__main__": 
     main()
