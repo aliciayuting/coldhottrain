@@ -336,7 +336,7 @@ def main():
         weight_decay=0.01,
         max_grad_norm=1.0,
         save_strategy="steps",
-        save_steps=500,
+        save_steps=args.eval_steps,
         save_total_limit=1,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
