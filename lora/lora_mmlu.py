@@ -82,6 +82,9 @@ def main():
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
+
+    model.gradient_checkpointing_enable()  
+    model.config.use_cache = False  
     
     # ========== Configure LoRA ==========
     print("Configuring LoRA...")
@@ -92,11 +95,12 @@ def main():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_dropout=args.lora_dropout,
         bias="none",
-        task_type="CAUSAL_LM",
-        modules_to_save=["lm_head"]  # make lm_head trainable
+        task_type="CAUSAL_LM"
     )
     
     model = get_peft_model(model, lora_config)
+    model = get_peft_model(model, lora_config)
+    model.enable_input_require_grads()
     model.print_trainable_parameters()
     print("\n=== LM Head Status ===")
     # Check base model specifically
