@@ -45,6 +45,8 @@ def parse_args():
     p.add_argument("--lora_r", type=int, default=8)
     p.add_argument("--lora_alpha", type=float, default=8)
     p.add_argument("--lora_dropout", type=float, default=0.05)
+    p.add_argument("--logging_steps", type=int, default=100)
+    p.add_argument("--eval_steps", type=int, default=500)  # More frequent eval
     p.add_argument("--use_qlora", action="store_true", help="Use 4-bit quantization")
     p.add_argument("--bf16", action="store_true", help="Use BF16")
     p.add_argument("--fp16", action="store_true", help="Use FP16")
@@ -334,8 +336,8 @@ def main():
         save_steps=500,
         save_total_limit=1,
         eval_strategy="steps",
-        eval_steps=500,
-        logging_steps=100,
+        eval_steps=args.eval_steps,
+        logging_steps=args.logging_steps,
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
         greater_is_better=True,
