@@ -1,6 +1,6 @@
 from datasets import load_dataset
 import evaluate
-from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPadding, TrainingArguments, Trainer, DataCollatorForLanguageModeling, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForSeq2Seq, DataCollatorWithPadding, TrainingArguments, Trainer, DataCollatorForLanguageModeling, AutoModelForSequenceClassification
 import torch
 # from custom_adam import MaskedAdamW
 from gradient_callback import *
@@ -32,7 +32,7 @@ MODEL = os.getenv("MODEL", "Qwen/Qwen2.5-0.5B")
 #MODEL = "Qwen/Qwen2.5-1.5B"
 
 
-DATASET = os.getenv("DATASET", "sst2")  # Options: "sst2" or "mnli"
+DATASET = os.getenv("DATASET", "sst2")  # Options: "sst2", "mnli", or "gsm8k"
 
 if DATASET == "sst2":
     VALIDATION_SET = "validation"
@@ -44,6 +44,15 @@ elif DATASET == "mnli":
     NUM_LABELS = 3
     EVAL_LOSS_STEPS=500
     NUM_EPOCHS=1
+elif DATASET == "gsm8k":
+    VALIDATION_SET = "test"
+    NUM_LABELS = None
+    EVAL_LOSS_STEPS=500
+    NUM_EPOCHS=3
+else:
+    raise ValueError(f"Unsupported dataset: {DATASET}")
+
+IS_GSM8K = DATASET == "gsm8k"
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -73,9 +82,7 @@ def safe_destroy():
         except Exception:
             pass
 
-
 # if main program
-# Preprocess into prompt–response format
 def tokenize_function_sst(examples):
     return tok(
         examples["sentence"],
@@ -83,7 +90,8 @@ def tokenize_function_sst(examples):
         truncation=True,
         max_length=512
     )
-#WILL NOT WORK WITH BATCHED!!!!!
+
+
 def tokenize_function_mnli(example):
     return tok(
         f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
@@ -93,23 +101,93 @@ def tokenize_function_mnli(example):
     )
 
 
+def build_gsm8k_prompt(question: str) -> str:
+    """Format a GSM8K question into a generation prompt."""
+    question = question.strip()
+    return f"Question: {question}\nAnswer: "
 
-# Preprocess into prompt–response format
-def tokenize_function_sst(examples):
-    return tok(
-        examples["sentence"],
-        padding="max_length",
-        truncation=True,
-        max_length=512
-    )
-#WILL NOT WORK WITH BATCHED!!!!!
-def tokenize_function_mnli(example):
-    return tok(
-        f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
-        padding="max_length",
-        truncation=True,
-        max_length=512
-    )
+
+HASH = "####"
+
+def tokenize_function_gsm8k(batch):
+    prompts = [build_gsm8k_prompt(q) for q in batch["question"]]  # chat or your unified template
+    completions = [a.strip() for a in batch["answer"]]      # contains rationale + '#### number'
+
+    p = tok(prompts, padding=False, truncation=False, add_special_tokens=False)
+    c = tok(completions, padding=False, truncation=False, add_special_tokens=False)
+
+    MAX_LEN = 1024
+    input_ids, labels, attn = [], [], []
+    hash_ids = tok(HASH, add_special_tokens=False)["input_ids"]
+
+    for p_ids, c_ids in zip(p["input_ids"], c["input_ids"]):
+        # find '####' in token space; if missing, fall back to last 6 tokens
+        idx = -1
+        for i in range(len(c_ids)-len(hash_ids)+1):
+            if c_ids[i:i+len(hash_ids)] == hash_ids:
+                idx = i
+                break
+        # keep only the ANSWER tail as supervised region (from '####' to end)
+        if idx >= 0:
+            supervised = c_ids[idx:] + [tok.eos_token_id]
+        else:
+            supervised = c_ids[-6:] + [tok.eos_token_id]  # conservative fallback
+
+        ids = p_ids + supervised
+        if len(ids) > MAX_LEN:
+            # trim from start of supervised region, but keep '####' tail intact
+            over = len(ids) - MAX_LEN
+            supervised = supervised[min(over, max(0, len(supervised)-1)):]
+            ids = p_ids + supervised
+
+        lab = [-100]*len(p_ids) + supervised  # **mask rationale entirely**
+        input_ids.append(ids)
+        labels.append(lab[:len(ids)])
+        attn.append([1]*len(ids))
+
+    return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
+
+def tokenize_function_gsm8k_maskquestion(batch):
+    prompts = [build_gsm8k_prompt(q) for q in batch["question"]]
+    completions = [a.strip() for a in batch["answer"]]
+
+    # Tokenize prompts and completions separately
+    prompt_tokenized = tok(prompts, padding=False, truncation=False, add_special_tokens=True)
+    completion_tokenized = tok(completions, padding=False, truncation=False, add_special_tokens=False)
+
+    # Concatenate token IDs
+    input_ids = []
+    labels = []
+    attention_mask = []
+    
+    for prompt_ids, completion_ids in zip(prompt_tokenized["input_ids"], 
+                                           completion_tokenized["input_ids"]):
+        
+        completion_ids = completion_ids + [tok.eos_token_id]
+
+        # Concatenate
+        combined_ids = prompt_ids + completion_ids
+        
+        # Truncate if needed
+        if len(combined_ids) > 1024:
+            combined_ids = combined_ids[:1024]
+        
+        # Create labels: -100 for prompt, actual IDs for completion
+        combined_labels = [-100] * len(prompt_ids) + completion_ids
+        if len(combined_labels) > 1024:
+            combined_labels = combined_labels[:1024]
+        
+        input_ids.append(combined_ids)
+        labels.append(combined_labels)
+        attention_mask.append([1] * len(combined_ids))
+    
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels
+    }
+
+
 def str2bool(v):
     if isinstance(v, bool):
         return v
@@ -129,6 +207,9 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, default="1linear_efficient", help="Mode for LinearColWise")
     parser.add_argument("--gradient-checkpointing", type=str2bool, default=True, help="Enable gradient checkpointing")
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument("--per-device-train-batch-size", type=int, default=16, help="per device batch size")
+    parser.add_argument("--logging-steps", type=int, default=50, help="logging steps")
+    parser.add_argument("--eval-steps", type=int, default=EVAL_LOSS_STEPS, help="eval steps")
     parser.add_argument("--random-swap-iters", type=int, default=100, help="random_swap_iters for HotSwapCallback")
     args_cmd = parser.parse_args()
     skip_ratio = args_cmd.skip_ratio
@@ -136,6 +217,9 @@ if __name__ == "__main__":
     mode = args_cmd.mode
     gradient_checkpointing = args_cmd.gradient_checkpointing
     gradient_accumulation_steps = args_cmd.gradient_accumulation_steps
+    per_device_train_batch_size = args_cmd.per_device_train_batch_size
+    logging_steps = args_cmd.logging_steps
+    eval_steps = args_cmd.eval_steps
     random_swap_iters = args_cmd.random_swap_iters
     print(f"model= {MODEL}, skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}, mode = {mode}, gradient_checkpointing = {gradient_checkpointing}, gradient_accumulation_steps = {gradient_accumulation_steps}")
 
@@ -153,7 +237,7 @@ if __name__ == "__main__":
     args = TrainingArguments(
         output_dir=f"{output_dir}/ckpt",
         logging_dir=f"{output_dir}/logs",
-        per_device_train_batch_size=16,
+        per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=16,
         gradient_accumulation_steps=gradient_accumulation_steps,
         #gradient_accumulation_steps=1,
@@ -162,12 +246,15 @@ if __name__ == "__main__":
         learning_rate=2e-5,
         # fp16=True,
         bf16=True,
-        logging_steps=50,
-        save_strategy="epoch",
+        logging_steps=logging_steps,
+        save_strategy="steps",
+        save_steps=25,
         # save_strategy="no",
         eval_strategy="steps",
-        eval_steps=EVAL_LOSS_STEPS,
-        weight_decay=0.01,
+        eval_steps=eval_steps,
+        weight_decay=0.00,
+        warmup_ratio=0.03,
+        lr_scheduler_type="cosine",
         #save_steps=100,
         # save_total_limit=2,
         ddp_find_unused_parameters=False,
@@ -185,12 +272,19 @@ if __name__ == "__main__":
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
         
-    model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL,
-        torch_dtype=torch.bfloat16,
-        num_labels=NUM_LABELS
-        # device_map="auto")
-    )
+    if IS_GSM8K:
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL,
+            torch_dtype=torch.bfloat16,
+            # device_map="auto")
+        )
+    else:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            MODEL,
+            torch_dtype=torch.bfloat16,
+            num_labels=NUM_LABELS
+            # device_map="auto")
+        )
     model.config.pad_token_id = tok.pad_token_id
 
 
@@ -248,33 +342,48 @@ if __name__ == "__main__":
 
 
 
-    ds = load_dataset("nyu-mll/glue", DATASET)
-
-
+    if IS_GSM8K:
+        ds = load_dataset("gsm8k", "main")
+    else:
+        ds = load_dataset("nyu-mll/glue", DATASET)
 
     with args.main_process_first(desc="tokenize"):
         if DATASET == "sst2":
             tokenized_ds = ds.map(tokenize_function_sst, batched=False)
         elif DATASET == "mnli":
             tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
+        elif DATASET == "gsm8k":
+            tokenized_ds = ds.map(
+                tokenize_function_gsm8k,
+                batched=True,
+                remove_columns=ds["train"].column_names,
+            )
         else:
             raise ValueError(f"Unsupported dataset: {DATASET}")
 
-
     print(tokenized_ds)
     # Data collator
-    data_collator = DataCollatorWithPadding(tokenizer=tok, pad_to_multiple_of=8)
+    if IS_GSM8K:
+        #data_collator = DataCollatorForLanguageModeling(tokenizer=tok, mlm=False)
+        data_collator = DataCollatorForSeq2Seq(
+            tokenizer=tok,
+            model=model,
+            label_pad_token_id=-100,
+            padding=True
+        )
+        compute_metrics = None
+    else:
+        data_collator = DataCollatorWithPadding(tokenizer=tok, pad_to_multiple_of=8)
+        accuracy_metric = evaluate.load("accuracy")
 
-    accuracy_metric = evaluate.load("accuracy")
+        def compute_metrics(eval_pred):
+            logits, labels = eval_pred
+            predictions = np.argmax(logits, axis=-1)
 
-    def compute_metrics(eval_pred):
-        logits, labels = eval_pred
-        predictions = np.argmax(logits, axis=-1)
-        
-        # Calculate accuracy
-        accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
-        
-        return accuracy  # Returns {"accuracy": 0.923}
+            # Calculate accuracy
+            accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+
+            return accuracy  # Returns {"accuracy": 0.923}
 
 
     opt_kwargs = {

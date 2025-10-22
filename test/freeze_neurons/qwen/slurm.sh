@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --gpus 4
-#SBATCH --time=02:30:00
+#SBATCH --time=01:00:00
 #SBATCH --constraint=gpu
 #SBATCH --qos=regular
 #SBATCH --account=m4341
@@ -16,15 +16,17 @@ echo "HF_HOME=$HF_HOME"
 echo "TRANSFORMERS_CACHE=$TRANSFORMERS_CACHE"
 echo "HF_DATASETS_CACHE=$HF_DATASETS_CACHE"
 
-ratio=0.8
+ratio=0.90
+random_swap_iters=50
 mode="1linear_efficient"
 MODEL=Qwen/Qwen2.5-0.5B
 DATASET="mnli"
 gradient_checkpointing="true"
 gradient_accumulation_steps=2
-random_swap_iters=1000000
+logging_steps=100
+eval_steps=500
 
-cmd="MODEL=${MODEL} DATASET=${DATASET} torchrun --standalone --nproc_per_node=4 /global/homes/l/lsx/jamal/coldhottrain-shouxu/test/freeze_neurons/qwen/main.py --skip-ratio ${ratio} --mode ${mode} --gradient-checkpointing ${gradient_checkpointing} --gradient-accumulation-steps ${gradient_accumulation_steps} --random-swap-iters ${random_swap_iters}"
+cmd="MODEL=${MODEL} DATASET=${DATASET} torchrun --standalone --nproc_per_node=4 /global/homes/l/lsx/jamal/coldhottrain-memory/test/freeze_neurons/qwen/main.py --skip-ratio ${ratio} --mode ${mode} --gradient-checkpointing ${gradient_checkpointing} --gradient-accumulation-steps ${gradient_accumulation_steps} --random-swap-iters ${random_swap_iters} --logging-steps ${logging_steps} --eval-steps ${eval_steps}"
 echo $cmd
 eval $cmd
 
