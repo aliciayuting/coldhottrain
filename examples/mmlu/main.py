@@ -36,6 +36,8 @@ NUM_EPOCHS = 10
 WARMUP_STEPS = 100
 
 
+
+
 def main():
     # read model from the program arugment
     import argparse
@@ -48,12 +50,14 @@ def main():
     OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
     skip_ratio = args.skip_ratio
 
-    print(f"Using model: {MODEL_NAME}")
-    print(f"Output directory: {OUTPUT_DIR}")
-    print(f"Skip ratio: {skip_ratio}")
+    if isrank0():
+        print(f"Using model: {MODEL_NAME}")
+        print(f"Output directory: {OUTPUT_DIR}")
+        print(f"Skip ratio: {skip_ratio}")
 
     # Load tokenizer
-    print("Loading tokenizer...")
+    if isrank0():
+        print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_NAME,
         trust_remote_code=True,
@@ -62,7 +66,7 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
 
     # Load model
-    print("Loading model...")
+    if isrank0(): print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
@@ -71,7 +75,7 @@ def main():
     )
 
     if skip_ratio > 0.0:
-        print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
+        if isrank0(): print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
 
         layers = get_decoder_layers(model)   # <-- the fix
         layer_idx = 23
@@ -106,10 +110,10 @@ def main():
             # print(type(layer.mlp.up_proj),      layer.mlp.up_proj.W_hot.shape,      layer.mlp.up_proj.W_cold.shape)
 
     else:
-        print("SKIP is set to False, not replacing linear layers with LinearColWise.")
+        if isrank0():  print("SKIP is set to False, not replacing linear layers with LinearColWise.")
 
     # Configure LoRA for efficient finetuning
-    print("Configuring LoRA...")
+    if isrank0(): print("Configuring LoRA...")
     lora_config = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -124,7 +128,7 @@ def main():
     # model.print_trainable_parameters()
 
     # Load MMLU dataset
-    print("Loading MMLU dataset...")
+    if isrank0(): print("Loading MMLU dataset...")
     dataset = load_dataset(DATASET, "all")
     train_dataset = dataset["auxiliary_train"]
     eval_dataset = dataset["test"]
@@ -213,16 +217,17 @@ def main():
 
 
     # Process datasets
-    print("Processing datasets...")
+    if isrank0(): print("Processing datasets...")
     train_dataset = train_dataset.map(format_mmlu_example, remove_columns=train_dataset.column_names)
     eval_dataset = eval_dataset.map(format_mmlu_example, remove_columns=eval_dataset.column_names)
 
-    print("Sample formatted training examples:")
-    show_dataset_example(train_dataset, num_examples=2)
+    if isrank0():
+        print("Sample formatted training examples:")
+        show_dataset_example(train_dataset, num_examples=2)
 
 
     # Tokenize
-    print("Tokenizing datasets...")
+    if isrank0(): print("Tokenizing datasets...")
     train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["prompt", "label"])
     eval_dataset = eval_dataset.map(tokenize_function, batched=True, remove_columns=["prompt", "label"])
 
@@ -246,8 +251,9 @@ def main():
             print(f"### Decoded: {tokenizer.decode(non_ignore_labels)}")
             print()
 
-    print("Sample tokenized training examples:")
-    show_tokenized_dataset_examples(eval_dataset, num_examples=2)
+    if isrank0(): 
+        print("Sample tokenized training examples:")
+        show_tokenized_dataset_examples(eval_dataset, num_examples=2)
 
 
 
@@ -268,7 +274,7 @@ def main():
         assert(len(ids) == 1)
         CHOICE_TOKEN_IDS.append(ids[-1])
     CHOICE_TOKEN_IDS = torch.tensor(CHOICE_TOKEN_IDS, dtype=torch.long)
-    print(f"Choice token IDs: {CHOICE_TOKEN_IDS.tolist()}")
+    if isrank0(): print(f"Choice token IDs: {CHOICE_TOKEN_IDS.tolist()}")
 
     # ---- Helper: find first non -100 label position per example -----------------
     def _first_answer_pos(labels: torch.Tensor) -> torch.Tensor:
@@ -306,7 +312,7 @@ def main():
         # (should not happen with your pipeline). We’ll mask these later anyway.
         bad = (ans_pos < 0)
         if bad.any():
-            print("!!! Warning: some examples have no answer token; using last non-pad position instead.")
+            if isrank0(): print("!!! Warning: some examples have no answer token; using last non-pad position instead.")
             # Choose a safe position (e.g., last timestep) to avoid index error
             ans_pos = torch.where(bad, torch.full_like(ans_pos, T - 1), ans_pos)
 
@@ -360,11 +366,10 @@ def main():
             acc = accuracy_score(gold_idx[gold_valid], pred_idx[gold_valid])
         else:
             acc = 0.0
-        print("accuracy:", acc)
 
-
-        for i in range(min(5, len(pred_idx))):
-            print(f"Example {i}: pred={pred_idx[i]}, gold={gold_idx[i]}, valid={gold_valid[i]}")
+        
+        # for i in range(min(5, len(pred_idx))):
+        #     print(f"Example {i}: pred={pred_idx[i]}, gold={gold_idx[i]}, valid={gold_valid[i]}")
 
         return {"accuracy": acc}
 
@@ -421,21 +426,23 @@ def main():
     trainer.add_callback(ram_cb)
 
     # Train
-    print("Starting training...")
+    if isrank0(): print("Starting training...")
     trainer.train()
 
 
     # Save final model
-    print("Saving model...")
+    if isrank0(): print("Saving model...")
     trainer.save_model(OUTPUT_DIR)
     tokenizer.save_pretrained(OUTPUT_DIR)
 
-    print("Training complete!")
+    if isrank0(): print("Training complete!")
 
     # # Optional: Evaluate on test set
-    # print("\nEvaluating on test set...")
+    # if isrank0(): print("\nEvaluating on test set...")
     # test_results = trainer.evaluate(test_dataset)
-    # print(f"Test results: {test_results}")
+    # if isrank0(): print(f"Test results: {test_results}")
+
+    safe_destroy()
 
 ## main
 if __name__ == "__main__":

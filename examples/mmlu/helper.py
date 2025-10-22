@@ -4,6 +4,23 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPa
 import torch
 import torch.nn as nn
 from module import LinearColWise
+import torch.distributed as dist
+
+def safe_destroy():
+    if dist.is_available() and dist.is_initialized():
+        try:
+            # Optional but helpful to flush in-flight NCCL ops
+            dist.barrier()
+        except Exception:
+            pass
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+
+
+def isrank0():
+    return not torch.distributed.is_available() or not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
 
 
 def print_gpu_memoory_usage():

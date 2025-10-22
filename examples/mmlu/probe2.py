@@ -1,6 +1,7 @@
 # vram_breakdown_callback.py
 import torch
 from transformers import TrainerCallback
+from helper import isrank0
 
 def _tensor_nbytes(t):
     return 0 if t is None else t.numel() * t.element_size()
@@ -147,13 +148,14 @@ class VramBreakdownCallback(TrainerCallback):
             trainer.log(log_record)
         else:
             state.log_history.append(log_record)
-
-        print(f"[mem @ next_step {next_global_step}] "
-              f"params={log_record['mem/params_mb']}MB, "
-              f"buffers={log_record['mem/buffers_mb']}MB, "
-              f"grads={log_record['mem/grads_mb']}MB, "
-              f"opt={log_record['mem/optimizer_mb']}MB, "
-              f"acts~={log_record['mem/activations_mb~']}MB, "
-              f"now={log_record['mem/now_allocated_mb']}MB, "
-              f"peak={log_record['mem/peak_allocated_mb']}MB,"
-              f"reserved={log_record['mem/reserved_mb']}MB")
+        
+        if isrank0():
+            print(f"[mem @ next_step {next_global_step}] "
+                f"params={log_record['mem/params_mb']}MB, "
+                f"buffers={log_record['mem/buffers_mb']}MB, "
+                f"grads={log_record['mem/grads_mb']}MB, "
+                f"opt={log_record['mem/optimizer_mb']}MB, "
+                f"acts~={log_record['mem/activations_mb~']}MB, "
+                f"now={log_record['mem/now_allocated_mb']}MB, "
+                f"peak={log_record['mem/peak_allocated_mb']}MB,"
+                f"reserved={log_record['mem/reserved_mb']}MB")
