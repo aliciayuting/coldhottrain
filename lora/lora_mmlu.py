@@ -314,8 +314,8 @@ def main():
         else:
             acc = 0.0        
         print(f"\nBatch Accuracy: {acc:.4f}")
-        for i in range(min(5, len(pred_idx))):
-            print(f"  Example {i}: pred={chr(65+pred_idx[i])}, gold={chr(65+gold_idx[i])}")
+        # for i in range(min(5, len(pred_idx))):
+        #     print(f"  Example {i}: pred={chr(65+pred_idx[i])}, gold={chr(65+gold_idx[i])}")
         
         return {"accuracy": acc}
     
