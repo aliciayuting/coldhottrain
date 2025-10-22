@@ -99,7 +99,6 @@ def main():
     )
     
     model = get_peft_model(model, lora_config)
-    model = get_peft_model(model, lora_config)
     model.enable_input_require_grads()
     model.print_trainable_parameters()
     print("\n=== LM Head Status ===")
