@@ -188,8 +188,8 @@ def main():
     print("Formatting datasets...")
     train_dataset = train_dataset.map(format_mmlu_example, remove_columns=train_dataset.column_names)
     eval_dataset = eval_dataset.map(format_mmlu_example, remove_columns=eval_dataset.column_names)
-    print("Sample formatted training examples:")
-    show_dataset_example(train_dataset, num_examples=1)
+    # print("Sample formatted training examples:")
+    # show_dataset_example(train_dataset, num_examples=1)
     
 
     def show_tokenized_dataset_examples(dataset, num_examples=2):
@@ -225,8 +225,8 @@ def main():
         remove_columns=["prompt", "label"]
     )
 
-    print("Sample tokenized training examples:")
-    show_tokenized_dataset_examples(eval_dataset, num_examples=1)
+    # print("Sample tokenized training examples:")
+    # show_tokenized_dataset_examples(eval_dataset, num_examples=1)
 
     
     # ========== Setup Choice Tokens ==========
