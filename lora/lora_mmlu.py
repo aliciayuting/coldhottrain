@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-LoRA finetune Vicuna (or any causal LM) on MMLU dataset
+LoRA finetune Qwen on MMLU dataset
 Usage:
-    python lora_vicuna_mmlu.py --model luffycodes/vicuna-mmlu-val-only-correct-mcq-7b-ep2 --batch_size 8
+    python lora_mmlu.py --model Qwen/Qwen2.5-0.5B-Instruct --batch_size 4
 """
 
 import os
