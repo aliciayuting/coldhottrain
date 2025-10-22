@@ -101,13 +101,14 @@ def main():
     model = get_peft_model(model, lora_config)
     model.enable_input_require_grads()
     model.print_trainable_parameters()
-    print("\n=== LM Head Status ===")
-    # Check base model specifically
-    print("\nChecking base model for lm_head:")
-    if hasattr(model, 'base_model'):
-        for name, param in model.base_model.named_parameters():
-            if 'lm_head' in name:
-                print(f"{name}: requires_grad={param.requires_grad}")
+    # This model doesn't finetune lm_head
+    # print("\n=== LM Head Status ===")
+    # # Check base model specifically
+    # print("\nChecking base model for lm_head:")
+    # if hasattr(model, 'base_model'):
+    #     for name, param in model.base_model.named_parameters():
+    #         if 'lm_head' in name:
+    #             print(f"{name}: requires_grad={param.requires_grad}")
 
     # ========== Load MMLU Dataset ==========
     print("Loading MMLU dataset...")
@@ -233,23 +234,7 @@ def main():
         remove_columns=["prompt", "label"]
     )
 
-    # After tokenization, add this to check:
-    print("\n=== Checking for truncation issues ===")
-    truncated_count = 0
-    no_answer_count = 0
 
-    for i in range(min(100, len(eval_dataset))):
-        example = eval_dataset[i]
-        non_ignore = [l for l in example['labels'] if l != -100]
-        
-        if len(non_ignore) == 0:
-            no_answer_count += 1
-        
-        if len([id for id in example['input_ids'] if id != tokenizer.pad_token_id]) >= 768:
-            truncated_count += 1
-
-    print(f"Examples with no answer token: {no_answer_count}/100")
-    print(f"Examples at max length (possibly truncated): {truncated_count}/100")
 
     # print("Sample tokenized training examples:")
     # show_tokenized_dataset_examples(eval_dataset, num_examples=1)
