@@ -40,7 +40,7 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--grad_accum", type=int, default=2)
     p.add_argument("--num_epochs", type=float, default=1.0)
-    p.add_argument("--learning_rate", type=float, default=5e-5)
+    p.add_argument("--learning_rate", type=float, default=1e-4)
     p.add_argument("--warmup_steps", type=int, default=100)
     p.add_argument("--lora_r", type=int, default=8)
     p.add_argument("--lora_alpha", type=float, default=8)
