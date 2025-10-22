@@ -15,6 +15,10 @@ import transformers
 import numpy as np
 from sklearn.metrics import accuracy_score
 
+from helper import *
+from module import *
+from probe2 import *
+
 
 # Set random seed for reproducibility
 transformers.set_seed(42)
@@ -26,7 +30,7 @@ transformers.set_seed(42)
 DATASET = "cais/mmlu"
 MAX_LENGTH = 768
 BATCH_SIZE = 16
-GRADIENT_ACCUMULATION_STEPS = 2
+GRADIENT_ACCUMULATION_STEPS = 1
 LEARNING_RATE = 5e-5
 NUM_EPOCHS = 10
 WARMUP_STEPS = 100
@@ -37,11 +41,16 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct", help="Model name to use")
+    parser.add_argument("--skip-ratio", type=float, default=0.0, help="Skip Ratio for LinearColWise")
     args = parser.parse_args()
 
     MODEL_NAME = args.model
     OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
+    skip_ratio = args.skip_ratio
 
+    print(f"Using model: {MODEL_NAME}")
+    print(f"Output directory: {OUTPUT_DIR}")
+    print(f"Skip ratio: {skip_ratio}")
 
     # Load tokenizer
     print("Loading tokenizer...")
@@ -60,6 +69,44 @@ def main():
         # device_map="auto",
         trust_remote_code=True,
     )
+
+    if skip_ratio > 0.0:
+        print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
+
+        layers = get_decoder_layers(model)   # <-- the fix
+        layer_idx = 23
+        for i, layer in enumerate(layers):
+                
+            mapping = {
+                "self_attn.q_proj": layer.self_attn.q_proj,
+                "self_attn.k_proj": layer.self_attn.k_proj,
+                "self_attn.v_proj": layer.self_attn.v_proj,
+                "self_attn.o_proj": layer.self_attn.o_proj,
+                "mlp.up_proj":      layer.mlp.up_proj,
+                "mlp.down_proj":    layer.mlp.down_proj,
+                "mlp.gate_proj":    layer.mlp.gate_proj,
+            }
+            
+
+
+            for name, linear in mapping.items():
+                assert isinstance(linear, nn.Linear), f"{name} expected nn.Linear, got {type(linear)}"
+                # print(f"Processing {name}: {tuple(linear.weight.shape)}")
+                out_features = linear.out_features
+                # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
+                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                wrapped = replace_linear_with_colwise(linear, hot_idx)
+                if name.startswith("self_attn."):
+                    setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
+                else:
+                    setattr(layer.mlp,       name.split(".", 1)[1], wrapped)
+
+            # # quick sanity check
+            # print(type(layer.self_attn.q_proj), layer.self_attn.q_proj.W_hot.shape, layer.self_attn.q_proj.W_cold.shape)
+            # print(type(layer.mlp.up_proj),      layer.mlp.up_proj.W_hot.shape,      layer.mlp.up_proj.W_cold.shape)
+
+    else:
+        print("SKIP is set to False, not replacing linear layers with LinearColWise.")
 
     # Configure LoRA for efficient finetuning
     print("Configuring LoRA...")
@@ -336,7 +383,7 @@ def main():
         save_total_limit=1,
         # eval_strategy="epoch",
         eval_strategy="steps",
-        eval_steps=500,
+        eval_steps=100,
         fp16=False,
         bf16=True,
         optim="adamw_torch",
@@ -352,10 +399,10 @@ def main():
         # load_best_model_at_end=True,
         # metric_for_best_model="eval_loss",
         # greater_is_better=False,
-        # max_steps=1,
+        max_steps=5,
         gradient_checkpointing=True,
         logging_strategy="steps",
-        logging_steps=100,
+        logging_steps=1,
         
     )
 
@@ -369,6 +416,9 @@ def main():
         compute_metrics=compute_metrics,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
+
+    ram_cb = VramBreakdownCallback()
+    trainer.add_callback(ram_cb)
 
     # Train
     print("Starting training...")
