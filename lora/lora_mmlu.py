@@ -55,8 +55,11 @@ def main():
     args = parse_args()
     
     # Setup output directory
-    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
-    # SCRATCH_PREFIX = "./scratch_lora"
+    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # SCRATCH_PREFIX = "./"
+    # ensure output_dir always lives under this directory
+    if not args.output_dir.startswith(SCRATCH_PREFIX):
+        args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
     
     print(f"Output directory: {args.output_dir}")
