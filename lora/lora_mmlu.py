@@ -25,14 +25,19 @@ from probe2 import *
 # Set random seed
 transformers.set_seed(42)
 
-OUTPUT_DIR = f"/pscratch/sd/l/lsx/lora/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
+import logging 
+logging.basicConfig(
+        level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
+        format="[%(levelname)s] %(message)s"
+    )
 
 def parse_args():
     p = argparse.ArgumentParser(description="LoRA finetune on MMLU")
-    p.add_argument("--model", type=str, default="luffycodes/vicuna-mmlu-val-only-correct-mcq-7b-ep2")
+    p.add_argument("--model", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
     p.add_argument("--dataset", type=str, default="cais/mmlu")
+    p.add_argument("--output_dir", type=str, default="/pscratch/sd/l/lsx/lora/qwen05b")
     p.add_argument("--max_length", type=int, default=768)
-    p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--grad_accum", type=int, default=2)
     p.add_argument("--num_epochs", type=float, default=1.0)
     p.add_argument("--learning_rate", type=float, default=5e-4)
@@ -44,18 +49,14 @@ def parse_args():
     p.add_argument("--bf16", action="store_true", help="Use BF16")
     p.add_argument("--fp16", action="store_true", help="Use FP16")
 
-    p.add_argument("--output_dir", type=str, default=OUTPUT_DIR+str(args.lora_r))
     return p.parse_args()
 
 def main():
     args = parse_args()
     
     # Setup output directory
-    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
-    if args.output_dir is None:
-        args.output_dir = f"{args.model.replace('/', '_')}-{args.dataset.replace('/', '_')}-lora"
-    if not args.output_dir.startswith(SCRATCH_PREFIX):
-        args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
+    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # SCRATCH_PREFIX = "./scratch_lora"
     os.makedirs(args.output_dir, exist_ok=True)
     
     print(f"Output directory: {args.output_dir}")
@@ -79,25 +80,27 @@ def main():
     
     # ========== Configure LoRA ==========
     print("Configuring LoRA...")
-    # Vicuna/LLaMA target modules
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        target_modules=target_modules,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_dropout=args.lora_dropout,
         bias="none",
-        task_type="CAUSAL_LM"
+        task_type="CAUSAL_LM",
+        modules_to_save=["lm_head"]  # make lm_head trainable
     )
     
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     print("\n=== LM Head Status ===")
-    for name, param in model.named_parameters():
-        if 'lm_head' in name:
-            print(f"{name}: requires_grad={param.requires_grad}")
-    
+    # Check base model specifically
+    print("\nChecking base model for lm_head:")
+    if hasattr(model, 'base_model'):
+        for name, param in model.base_model.named_parameters():
+            if 'lm_head' in name:
+                print(f"{name}: requires_grad={param.requires_grad}")
+
     # ========== Load MMLU Dataset ==========
     print("Loading MMLU dataset...")
     dataset = load_dataset(args.dataset, "all")
@@ -185,15 +188,19 @@ def main():
     print("Formatting datasets...")
     train_dataset = train_dataset.map(format_mmlu_example, remove_columns=train_dataset.column_names)
     eval_dataset = eval_dataset.map(format_mmlu_example, remove_columns=eval_dataset.column_names)
+    print("Sample formatted training examples:")
+    show_dataset_example(train_dataset, num_examples=1)
     
+
     def show_tokenized_dataset_examples(dataset, num_examples=2):
         for i in range(len(dataset)):
             if i >= num_examples:
                 break
             example = dataset[i]
             print(f"--- Example {i}: ---")
+            print(f"example keys: {list(example.keys())}")
             print(f"### Input IDs length: {len(example['input_ids'])}")
-            print(f"### Input ids: {example['input_ids']}")
+            # print(f"### Input ids: {example['input_ids']}")
             non_padded_input_idxs = [idx for idx, id in enumerate(example['input_ids']) if id != tokenizer.pad_token_id]
             non_padded_labels_idxs = [idx for idx, label in enumerate(example['labels']) if label != -100]
             non_masked_attention_idxs = [idx for idx, mask in enumerate(example['attention_mask']) if mask != 0]
@@ -206,9 +213,6 @@ def main():
             print(f"### Decoded: {tokenizer.decode(non_ignore_labels)}")
             print()
 
-    print("Sample tokenized training examples:")
-    show_tokenized_dataset_examples(eval_dataset, num_examples=5)
-
     print("Tokenizing datasets...")
     train_dataset = train_dataset.map(
         tokenize_function,
@@ -220,6 +224,10 @@ def main():
         batched=True,
         remove_columns=["prompt", "label"]
     )
+
+    print("Sample tokenized training examples:")
+    show_tokenized_dataset_examples(eval_dataset, num_examples=1)
+
     
     # ========== Setup Choice Tokens ==========
     CHOICES = [" A", " B", " C", " D"]
@@ -337,7 +345,6 @@ def main():
         dataloader_pin_memory=True,
         resume_from_checkpoint=False,
         logging_strategy="steps",
-        logging_steps=100
     )
     
     # ========== Trainer ==========
