@@ -40,7 +40,7 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--grad_accum", type=int, default=2)
     p.add_argument("--num_epochs", type=float, default=1.0)
-    p.add_argument("--learning_rate", type=float, default=5e-4)
+    p.add_argument("--learning_rate", type=float, default=5e-5)
     p.add_argument("--warmup_steps", type=int, default=100)
     p.add_argument("--lora_r", type=int, default=8)
     p.add_argument("--lora_alpha", type=float, default=8)
@@ -300,7 +300,17 @@ def main():
         if bad.any():
             print("!!! Warning: some examples have no answer token; using last non-pad position instead.")
             ans_pos = torch.where(bad, torch.full_like(ans_pos, T - 1), ans_pos)
-        
+            num_bad = bad.sum().item()
+            print(f"\n!!! WARNING: {num_bad}/{B} examples have no answer token")
+            
+            # DEBUG: Print details of first bad example
+            bad_idx = torch.where(bad)[0][0].item()
+            print(f"First bad example (index {bad_idx}):")
+            print(f"  Labels shape: {labels[bad_idx].shape}")
+            print(f"  Labels: {labels[bad_idx].tolist()[:50]}...")  # First 50
+            print(f"  Non-ignore count: {(labels[bad_idx] != -100).sum().item()}")
+            print(f"  Unique values: {torch.unique(labels[bad_idx]).tolist()}")
+            ans_pos = torch.where(bad, torch.full_like(ans_pos, T - 1), ans_pos)
         row_idx = torch.arange(B, device=logits.device)
         logits_at_ans = logits[row_idx, ans_pos, :]
         
