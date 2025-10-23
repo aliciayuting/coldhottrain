@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """
-LoRA finetune Qwen on MMLU dataset - FIXED VERSION
-Key fixes:
-1. Uses chat template (fixes accuracy/loss paradox)
-2. Correct answer format (no space)
-3. Better hyperparameters (2 epochs, r=16, lr=2e-4)
-4. Early stopping to prevent overfitting
-
+LoRA finetune Qwen on MMLU dataset
 Usage:
-    python lora_mmlu_FIXED.py --model Qwen/Qwen2.5-0.5B-Instruct --batch_size 4 --bf16
+    python lora_mmlu.py --model Qwen/Qwen2.5-0.5B-Instruct --batch_size 4
 """
 
 import os
@@ -21,47 +15,43 @@ from transformers import (
     TrainingArguments,
     Trainer,
     default_data_collator,
-    EarlyStoppingCallback,
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import transformers
 import numpy as np
 from sklearn.metrics import accuracy_score
+from probe2 import *
 
 # Set random seed
 transformers.set_seed(42)
 
 import logging 
 logging.basicConfig(
-    level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
-    format="[%(levelname)s] %(message)s"
-)
+        level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
+        format="[%(levelname)s] %(message)s"
+    )
 
 def parse_args():
-    p = argparse.ArgumentParser(description="LoRA finetune on MMLU - FIXED")
+    p = argparse.ArgumentParser(description="LoRA finetune on MMLU")
     p.add_argument("--model", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
     p.add_argument("--dataset", type=str, default="cais/mmlu")
-    p.add_argument("--output_dir", type=str, default="/pscratch/sd/l/lsx/lora/qwen05b_fixed")
-    p.add_argument("--max_length", type=int, default=768)  # FIXED: Increased for chat template
+    p.add_argument("--output_dir", type=str, default="/pscratch/sd/l/lsx/lora/qwen05b")
+    p.add_argument("--max_length", type=int, default=768)
     p.add_argument("--batch_size", type=int, default=4)
-    p.add_argument("--grad_accum", type=int, default=4)  # FIXED: Increased
-    p.add_argument("--num_epochs", type=float, default=2.0)  # FIXED: Reduced from 10 to 2
-    p.add_argument("--learning_rate", type=float, default=2e-4)  # FIXED: Increased from 1e-4
+    p.add_argument("--grad_accum", type=int, default=2)
+    p.add_argument("--num_epochs", type=float, default=1.0)
+    p.add_argument("--learning_rate", type=float, default=1e-4)
     p.add_argument("--warmup_steps", type=int, default=100)
-    p.add_argument("--lora_r", type=int, default=16)  # FIXED: Increased from 8 to 16
-    p.add_argument("--lora_alpha", type=float, default=32)  # FIXED: Increased from 8 to 32
+    p.add_argument("--lora_r", type=int, default=8)
+    p.add_argument("--lora_alpha", type=float, default=8)
     p.add_argument("--lora_dropout", type=float, default=0.05)
-    p.add_argument("--logging_steps", type=int, default=200)  # FIXED: More frequent logging
-    p.add_argument("--eval_steps", type=int, default=200)  # FIXED: More frequent eval
+    p.add_argument("--logging_steps", type=int, default=200)
+    p.add_argument("--eval_steps", type=int, default=200)  # More frequent eval
+    p.add_argument("--use_qlora", action="store_true", help="Use 4-bit quantization")
     p.add_argument("--bf16", action="store_true", help="Use BF16")
     p.add_argument("--fp16", action="store_true", help="Use FP16")
-    p.add_argument("--early_stopping_patience", type=int, default=3, 
-                   help="Stop if no improvement for N evaluations")
-    p.add_argument("--max_train_samples", type=int, default=None, 
-                   help="Limit training samples for debugging")
-    p.add_argument("--max_eval_samples", type=int, default=None, 
-                   help="Limit eval samples for debugging")
-
+    p.add_argument("--label_smoothing", type=float, default=0.1,
+                   help="Label smoothing factor (0.1 recommended for calibration)")
     return p.parse_args()
 
 def main():
@@ -69,20 +59,13 @@ def main():
     
     # Setup output directory
     SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    # SCRATCH_PREFIX = "./"
+    # ensure output_dir always lives under this directory
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
     
     print(f"Output directory: {args.output_dir}")
-    print(f"\n{'='*70}")
-    print("FIXED VERSION - Key improvements:")
-    print("✅ Uses chat template (fixes accuracy/loss paradox)")
-    print("✅ Correct answer format (no space)")
-    print(f"✅ Reduced epochs: {args.num_epochs} (was 10)")
-    print(f"✅ Higher learning rate: {args.learning_rate} (was 1e-4)")
-    print(f"✅ Better LoRA config: r={args.lora_r}, alpha={args.lora_alpha} (was r=8, alpha=8)")
-    print(f"✅ Early stopping enabled (patience={args.early_stopping_patience})")
-    print(f"{'='*70}\n")
     
     # ========== Load Tokenizer ==========
     print("Loading tokenizer...")
@@ -91,21 +74,14 @@ def main():
         trust_remote_code=True,
         padding_side="right"
     )
-    
-    # Set pad token
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-    
-    print(f"Tokenizer loaded: pad_token='{tokenizer.pad_token}'")
+    tokenizer.pad_token = tokenizer.eos_token
     
     # ========== Load Model ==========
     print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
+        torch_dtype=torch.bfloat16,
         trust_remote_code=True,
-        # device_map="auto"
     )
 
     model.gradient_checkpointing_enable()  
@@ -126,24 +102,14 @@ def main():
     model = get_peft_model(model, lora_config)
     model.enable_input_require_grads()
     model.print_trainable_parameters()
-    
-    # Verify trainable parameters are reasonable
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_pct = 100 * trainable_params / total_params
-    
-    print(f"\n{'='*70}")
-    print("Parameter Check:")
-    print(f"  Trainable: {trainable_params:,} ({trainable_pct:.2f}%)")
-    print(f"  Total: {total_params:,}")
-    
-    if trainable_pct > 5:
-        print(f"  ⚠️  WARNING: {trainable_pct:.1f}% trainable is high for LoRA!")
-        print(f"  Expected: <2% for r={args.lora_r}")
-        print(f"  This might cause overfitting.")
-    else:
-        print(f"  ✅ Trainable % looks good for LoRA")
-    print(f"{'='*70}\n")
+    # This model doesn't finetune lm_head
+    # print("\n=== LM Head Status ===")
+    # # Check base model specifically
+    # print("\nChecking base model for lm_head:")
+    # if hasattr(model, 'base_model'):
+    #     for name, param in model.base_model.named_parameters():
+    #         if 'lm_head' in name:
+    #             print(f"{name}: requires_grad={param.requires_grad}")
 
     # ========== Load MMLU Dataset ==========
     print("Loading MMLU dataset...")
@@ -151,22 +117,13 @@ def main():
     train_dataset = dataset["auxiliary_train"]
     eval_dataset = dataset["test"]
     
-    # Optionally limit samples for debugging
-    if args.max_train_samples:
-        train_dataset = train_dataset.select(range(min(args.max_train_samples, len(train_dataset))))
-        print(f"Limited training to {len(train_dataset)} samples")
-    if args.max_eval_samples:
-        eval_dataset = eval_dataset.select(range(min(args.max_eval_samples, len(eval_dataset))))
-        print(f"Limited eval to {len(eval_dataset)} samples")
+    # Optionally truncate for debugging
+    # train_dataset = train_dataset.select(range(100))
+    # eval_dataset = eval_dataset.select(range(50))
     
-    print(f"Dataset loaded: {len(train_dataset)} train, {len(eval_dataset)} eval")
-    
-    # ========== Format MMLU Examples with Chat Template ==========
+    # ========== Format MMLU Examples ==========
     def format_mmlu_example(example):
-        """
-        CRITICAL FIX: Uses chat template instead of plain text
-        This fixes the accuracy/loss paradox!
-        """
+        """Convert MMLU example to instruction-following format"""
         question = example["question"]
         choices = example["choices"]
         answer_idx = example["answer"]
@@ -174,141 +131,142 @@ def main():
         # Format choices
         choice_text = "\n".join([f"{chr(65+i)}. {choice}" for i, choice in enumerate(choices)])
         
-        # FIXED: Use chat template (this is the key fix!)
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant that answers multiple choice questions. Respond with only the letter of the correct answer (A, B, C, or D)."
-            },
-            {
-                "role": "user",
-                "content": f"{question}\n\n{choice_text}"
-            }
-        ]
-        
-        # Apply chat template
-        prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True  # Adds the assistant prefix
-        )
-        
-        # FIXED: No space before letter!
-        answer_letter = chr(65 + answer_idx)  # "A", "B", "C", or "D"
-        
-        full_text = prompt + answer_letter
-        
-        return {
-            "prompt": prompt,
-            "answer": answer_letter,
-            "full_text": full_text
-        }
+        # Create instruction-following format
+        prompt = f"""Answer the following multiple choice question.
 
-    print("\nFormatting datasets with chat template...")
-    train_dataset = train_dataset.map(format_mmlu_example, remove_columns=train_dataset.column_names)
-    eval_dataset = eval_dataset.map(format_mmlu_example, remove_columns=eval_dataset.column_names)
-    
-    # Show example
-    print("\n" + "="*70)
-    print("SAMPLE FORMATTED EXAMPLE:")
-    print("="*70)
-    print(f"Prompt:\n{train_dataset[0]['prompt']}")
-    print(f"\nAnswer: '{train_dataset[0]['answer']}'")
-    print(f"\nFull text:\n{train_dataset[0]['full_text']}")
-    print("="*70 + "\n")
-    
+    Question: {question}
+
+    Choices:
+    {choice_text}
+
+    Answer:"""
+        
+        # Get the correct answer letter
+        answer = chr(65 + answer_idx)
+        answer = f" {answer}"
+        full_text = prompt + answer
+        
+        return {"prompt": prompt, 
+                "label": answer,
+                "full_text": full_text}
+
     # ========== Tokenize ==========
     def tokenize_function(examples):
-        """Tokenize examples, masking prompt tokens in labels"""
-        # Tokenize full text
-        full_encodings = tokenizer(
+        enc = tokenizer(
             examples["full_text"],
             truncation=True,
             max_length=args.max_length,
             padding="max_length",
-            return_tensors=None,
+            add_special_tokens=False,
         )
-        
-        # Tokenize just prompt to find where answer starts
-        prompt_encodings = tokenizer(
+        enc_prompt = tokenizer(
             examples["prompt"],
             truncation=True,
             max_length=args.max_length,
             padding=False,
-            return_tensors=None,
+            add_special_tokens=False,
         )
+        prompt_lens = [len(x) for x in enc_prompt["input_ids"]]
         
-        # Create labels
-        labels = []
-        for i, (input_ids, attention_mask) in enumerate(zip(full_encodings["input_ids"], 
-                                                             full_encodings["attention_mask"])):
-            label = input_ids.copy()
-            prompt_len = len(prompt_encodings["input_ids"][i])
-            
-            # Mask prompt tokens (set to -100 so they're ignored in loss)
-            for j in range(min(prompt_len, len(label))):
-                label[j] = -100
-            
-            # Mask padding tokens
-            for j in range(len(label)):
-                if attention_mask[j] == 0:
-                    label[j] = -100
-            
-            labels.append(label)
+        labels = [seq.copy() for seq in enc["input_ids"]]
         
-        return {
-            "input_ids": full_encodings["input_ids"],
-            "attention_mask": full_encodings["attention_mask"],
-            "labels": labels
-        }
+        # Mask padding
+        for i, mask in enumerate(enc["attention_mask"]):
+            for j, m in enumerate(mask):
+                if m == 0:
+                    labels[i][j] = -100
+        
+        # Mask prompt, keep only answer tokens
+        for i, plen in enumerate(prompt_lens):
+            upto = min(plen, len(labels[i]))
+            for j in range(upto):
+                if labels[i][j] != -100:
+                    labels[i][j] = -100
+        
+        enc["labels"] = labels
+        return enc
+
+    def show_dataset_example(dataset, num_examples=1):
+        for i in range(len(dataset)):
+            if i >= num_examples:
+                break
+            print(f"--- Example {i}: ---")
+            print(f"### Prompt:\n{dataset[i]['prompt']}")
+            print(f"### Label:\n{dataset[i]['label']}")
+            print()
+        
+    print("Formatting datasets...")
+    train_dataset = train_dataset.map(format_mmlu_example, remove_columns=train_dataset.column_names)
+    eval_dataset = eval_dataset.map(format_mmlu_example, remove_columns=eval_dataset.column_names)
+    # print("Sample formatted training examples:")
+    # show_dataset_example(train_dataset, num_examples=1)
     
+
+    def show_tokenized_dataset_examples(dataset, num_examples=2):
+        for i in range(len(dataset)):
+            if i >= num_examples:
+                break
+            example = dataset[i]
+            print(f"--- Example {i}: ---")
+            print(f"example keys: {list(example.keys())}")
+            print(f"### Input IDs length: {len(example['input_ids'])}")
+            # print(f"### Input ids: {example['input_ids']}")
+            non_padded_input_idxs = [idx for idx, id in enumerate(example['input_ids']) if id != tokenizer.pad_token_id]
+            non_padded_labels_idxs = [idx for idx, label in enumerate(example['labels']) if label != -100]
+            non_masked_attention_idxs = [idx for idx, mask in enumerate(example['attention_mask']) if mask != 0]
+            print(f"### Non-padded Input IDs (len: {len(non_padded_input_idxs)})")
+            print(f"### Non-padded Labels (len: {len(non_padded_labels_idxs)})")
+            print(f"### Non-masked Attention (len: {len(non_masked_attention_idxs)})")
+            print(f"### Input text (non-padded):\n{tokenizer.decode([id for id in example['input_ids'] if id != tokenizer.pad_token_id])}")
+            non_ignore_labels = [l for l in example['labels'] if l != -100]
+            print(f"### Labels (non -100): {non_ignore_labels}")
+            print(f"### Decoded: {tokenizer.decode(non_ignore_labels)}")
+            print()
+
     print("Tokenizing datasets...")
     train_dataset = train_dataset.map(
         tokenize_function,
         batched=True,
-        remove_columns=["prompt", "answer", "full_text"]
+        remove_columns=["prompt", "label"]
     )
     eval_dataset = eval_dataset.map(
         tokenize_function,
         batched=True,
-        remove_columns=["prompt", "answer", "full_text"]
+        remove_columns=["prompt", "label"]
     )
-    
-    # Show tokenized example
-    print("\n" + "="*70)
-    print("SAMPLE TOKENIZED EXAMPLE:")
-    print("="*70)
-    example = train_dataset[0]
-    non_pad_ids = [id for id in example["input_ids"] if id != tokenizer.pad_token_id]
-    non_ignore_labels = [(i, l) for i, l in enumerate(example["labels"]) if l != -100]
-    print(f"Input length (non-padded): {len(non_pad_ids)} tokens")
-    print(f"Label tokens (non -100): {len(non_ignore_labels)} tokens")
-    print(f"Decoded input: {tokenizer.decode(non_pad_ids)}")
-    print(f"Decoded labels: {tokenizer.decode([l for _, l in non_ignore_labels])}")
-    print("="*70 + "\n")
+
+
+
+    # print("Sample tokenized training examples:")
+    # show_tokenized_dataset_examples(eval_dataset, num_examples=1)
+
     
     # ========== Setup Choice Tokens ==========
-    # FIXED: No space before letters!
-    CHOICES = ["A", "B", "C", "D"]
-    CHOICE_TOKEN_IDS = []
+    CHOICES = [" A", " B", " C", " D"]
+    CHOICE_TOKEN_IDS_LIST = []
+    for s in CHOICES:
+        ids = tokenizer.encode(s, add_special_tokens=False)
+        assert(len(ids) == 1)
+        CHOICE_TOKEN_IDS_LIST.append(ids)
     
-    print("Setting up choice tokens...")
-    for choice in CHOICES:
-        ids = tokenizer.encode(choice, add_special_tokens=False)
-        if len(ids) != 1:
-            print(f"⚠️  WARNING: Choice '{choice}' tokenizes to {len(ids)} tokens: {ids}")
-            print(f"   Using first token: {ids[0]}")
-            CHOICE_TOKEN_IDS.append(ids[0])
+    # Check if single or multi-token
+    SINGLE_TOKEN = all(len(ids) == 1 for ids in CHOICE_TOKEN_IDS_LIST)
+    
+    if SINGLE_TOKEN:
+        CHOICE_TOKEN_IDS = torch.tensor([ids[0] for ids in CHOICE_TOKEN_IDS_LIST], dtype=torch.long)
+        print(f"Choice tokens are SINGLE tokens: {CHOICE_TOKEN_IDS.tolist()}")
+    else:
+        print(f"Choice tokens are MULTI-TOKEN: {CHOICE_TOKEN_IDS_LIST}")
+        # For multi-token (like Vicuna), use second token (the letter)
+        if all(len(ids) >= 2 for ids in CHOICE_TOKEN_IDS_LIST):
+            CHOICE_TOKEN_IDS = torch.tensor([ids[1] for ids in CHOICE_TOKEN_IDS_LIST], dtype=torch.long)
+            print(f"Using second token (letter): {CHOICE_TOKEN_IDS.tolist()}")
+            print(f"Decoded: {[tokenizer.decode([tid]) for tid in CHOICE_TOKEN_IDS.tolist()]}")
         else:
-            CHOICE_TOKEN_IDS.append(ids[0])
-    
-    CHOICE_TOKEN_IDS = torch.tensor(CHOICE_TOKEN_IDS, dtype=torch.long)
-    print(f"Choice token IDs: {CHOICE_TOKEN_IDS.tolist()}")
-    print(f"Decoded: {[tokenizer.decode([tid]) for tid in CHOICE_TOKEN_IDS.tolist()]}\n")
+            raise ValueError("Inconsistent token structure for choices")
     
     # ========== Metrics Helpers ==========
     def _first_answer_pos(labels: torch.Tensor) -> torch.Tensor:
-        """Find position of first non-masked label token"""
         not_ign = (labels != -100)
         first_pos = not_ign.float().argmax(dim=1)
         has_any = not_ign.any(dim=1)
@@ -316,82 +274,112 @@ def main():
         return first_pos
     
     def preprocess_logits_for_metrics(logits, labels):
-        """Extract logits at answer position for the 4 choice tokens"""
         if isinstance(logits, (tuple, list)):
             logits = logits[0]
-        
         logits = logits.float()
         labels = labels.to(logits.device)
         
         B, T, V = logits.shape
-        
-        # Find first answer token position
         ans_pos = _first_answer_pos(labels)
         
-        # Handle cases with no answer token
-        invalid = (ans_pos < 0)
-        if invalid.any():
-            logging.warning(f"{invalid.sum().item()}/{B} examples have no answer tokens")
-            ans_pos = torch.where(invalid, torch.full_like(ans_pos, T - 1), ans_pos)
-        
-        # Extract logits at answer position
+        bad = (ans_pos < 0)
+        if bad.any():
+            # print("!!! Warning: some examples have no answer token; using last non-pad position instead.")
+            ans_pos = torch.where(bad, torch.full_like(ans_pos, T - 1), ans_pos)
+            num_bad = bad.sum().item()
+            # print(f"\n!!! WARNING: {num_bad}/{B} examples have no answer token")
+            
+            # DEBUG: Print details of first bad example
+            bad_idx = torch.where(bad)[0][0].item()
+            # print(f"First bad example (index {bad_idx}):")
+            # print(f"  Labels shape: {labels[bad_idx].shape}")
+            # print(f"  Labels: {labels[bad_idx].tolist()[:50]}...")  # First 50
+            # print(f"  Non-ignore count: {(labels[bad_idx] != -100).sum().item()}")
+            # print(f"  Unique values: {torch.unique(labels[bad_idx]).tolist()}")
+            ans_pos = torch.where(bad, torch.full_like(ans_pos, T - 1), ans_pos)
         row_idx = torch.arange(B, device=logits.device)
         logits_at_ans = logits[row_idx, ans_pos, :]
         
-        # Get logits for the 4 choice tokens
         choice_ids = CHOICE_TOKEN_IDS.to(logits.device)
-        choice_logits = logits_at_ans[:, choice_ids]
-        
-        return choice_logits
+        four_logits = logits_at_ans.index_select(dim=1, index=choice_ids)
+        return four_logits
     
     def compute_metrics(eval_pred):
-        """Compute accuracy from choice logits"""
-        choice_logits = eval_pred.predictions
-        labels = eval_pred.label_ids
+        four_logits = eval_pred.predictions
+        label_ids = eval_pred.label_ids
         
-        # Predicted choice (0-3)
-        pred_idx = choice_logits.argmax(axis=1)
+        pred_idx = np.asarray(four_logits).argmax(axis=1)
         
-        # Find gold answer
-        labels_tensor = torch.tensor(labels)
-        ans_pos = _first_answer_pos(labels_tensor)
-        has_answer = (ans_pos >= 0)
+        labels = torch.tensor(label_ids)
+        ans_pos = _first_answer_pos(labels)
+        has_any = (ans_pos >= 0)
         
-        # Extract gold token IDs
-        row_idx = torch.arange(labels_tensor.size(0))
-        gold_tokens = torch.full((labels_tensor.size(0),), -1, dtype=torch.long)
-        gold_tokens[has_answer] = labels_tensor[row_idx[has_answer], ans_pos[has_answer]]
+        row_idx = torch.arange(labels.size(0))
+        gold_token_ids = torch.full((labels.size(0),), -1, dtype=torch.long)
+        gold_token_ids[has_any] = labels[row_idx[has_any], ans_pos[has_any]]
         
-        # Map gold tokens to choice index
         choice_ids = CHOICE_TOKEN_IDS
-        eq_matrix = (gold_tokens[:, None] == choice_ids[None, :])
+        eq_matrix = (gold_token_ids[:, None] == choice_ids[None, :])
         gold_idx = eq_matrix.long().argmax(dim=1).numpy()
         gold_valid = eq_matrix.any(dim=1).numpy()
         
-        # Compute accuracy
         if gold_valid.any():
             acc = accuracy_score(gold_idx[gold_valid], pred_idx[gold_valid])
         else:
             acc = 0.0
         
-        # Show examples
-        print(f"\n{'='*70}")
-        print(f"Evaluation Accuracy: {acc:.4f}")
-        print(f"{'='*70}")
-        for i in range(min(5, len(pred_idx))):
-            if gold_valid[i]:
-                pred_letter = chr(65 + pred_idx[i])
-                gold_letter = chr(65 + gold_idx[i])
-                status = "✓" if pred_idx[i] == gold_idx[i] else "✗"
-                print(f"  Example {i}: pred={pred_letter}, gold={gold_letter} {status}")
-        print(f"{'='*70}\n")
+        # NEW: Calculate calibration metrics
+        probs = torch.softmax(torch.tensor(four_logits), dim=1).numpy()
         
+        # Probability of predicted answer
+        pred_probs = probs[np.arange(len(pred_idx)), pred_idx]
+        
+        # Probability of correct answer (for valid examples)
+        if gold_valid.any():
+            correct_probs = probs[gold_valid, gold_idx[gold_valid]]
+            calibration = correct_probs.mean()  # Higher is better
+            
+            # Simulated loss (approximation)
+            simulated_loss = -np.log(correct_probs + 1e-10).mean()
+        else:
+            calibration = 0.0
+            simulated_loss = 10.0
+        
+        # NEW: Prediction distribution check
+        pred_counts = np.bincount(pred_idx, minlength=4)
+        max_pred_pct = pred_counts.max() / len(pred_idx)
+        
+        # NEW: Enhanced logging with diagnostics
+        print(f"\n{'='*70}")
+        print(f"Evaluation Metrics:")
+        print(f"  Accuracy: {acc:.4f}")
+        print(f"  Calibration (correct answer prob): {calibration:.4f}")
+        print(f"  Simulated loss: {simulated_loss:.4f}")
+        print(f"  Prediction confidence (mean): {pred_probs.mean():.4f}")
+        
+        # NEW: Model collapse detection
+        if max_pred_pct > 0.4:
+            print(f"  🚨 MODEL COLLAPSE: {max_pred_pct*100:.1f}% predictions are one answer!")
+        elif max_pred_pct > 0.35:
+            print(f"  ⚠️  Prediction imbalance: {max_pred_pct*100:.1f}%")
+        else:
+            print(f"  ✅ Predictions balanced: max={max_pred_pct*100:.1f}%")
+        
+        # NEW: Calibration warning
+        if calibration < 0.3 and acc > 0.3:
+            print(f"  ⚠️  Poor calibration: model overconfident in wrong answers")
+        elif calibration > 0.5:
+            print(f"  ✅ Good calibration")
+        
+        print(f"  Prediction distribution: A={pred_counts[0]}, B={pred_counts[1]}, "
+              f"C={pred_counts[2]}, D={pred_counts[3]}")
+        print(f"{'='*70}\n")
         return {"accuracy": acc}
     
     # ========== Training Arguments ==========
-    use_bf16 = args.bf16 or (torch.cuda.is_available() and 
-                             torch.cuda.get_device_capability()[0] >= 8 and 
-                             not args.fp16)
+    use_bf16_hw = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+    fp16 = args.fp16
+    bf16 = args.bf16 or (use_bf16_hw and not args.fp16)
     
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -404,45 +392,26 @@ def main():
         warmup_steps=args.warmup_steps,
         weight_decay=0.01,
         max_grad_norm=1.0,
-        
-        # Saving and evaluation
         save_strategy="steps",
         save_steps=args.eval_steps,
-        save_total_limit=3,  # Keep more checkpoints
+        save_total_limit=1,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
-        
-        # Logging
         logging_steps=args.logging_steps,
-        logging_strategy="steps",
-        
-        # Best model selection - FIXED: Use eval_loss instead of accuracy
         load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",  # FIXED: Watch loss, not accuracy
-        greater_is_better=False,  # Lower loss is better
-        
-        # Mixed precision
-        fp16=args.fp16,
-        bf16=use_bf16,
-        
-        # Optimization
+        metric_for_best_model="accuracy",
+        greater_is_better=True,
+        fp16=fp16,
+        bf16=bf16,
         optim="adamw_torch",
         gradient_checkpointing=True,
-        
-        # Other
         ddp_find_unused_parameters=False,
         dataloader_num_workers=4,
         dataloader_pin_memory=True,
-        report_to="none",
+        resume_from_checkpoint=False,
+        logging_strategy="steps",
+        label_smoothing_factor=args.label_smoothing
     )
-    
-    print(f"\nTraining configuration:")
-    print(f"  Epochs: {args.num_epochs}")
-    print(f"  Batch size: {args.batch_size} x {args.grad_accum} = {args.batch_size * args.grad_accum} effective")
-    print(f"  Learning rate: {args.learning_rate}")
-    print(f"  LoRA: r={args.lora_r}, alpha={args.lora_alpha}")
-    print(f"  Mixed precision: bf16={use_bf16}, fp16={args.fp16}")
-    print(f"  Early stopping: patience={args.early_stopping_patience}\n")
     
     # ========== Trainer ==========
     trainer = Trainer(
@@ -453,75 +422,33 @@ def main():
         data_collator=default_data_collator,
         compute_metrics=compute_metrics,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-        callbacks=[
-            EarlyStoppingCallback(
-                early_stopping_patience=args.early_stopping_patience,
-                early_stopping_threshold=0.01
-            )
-        ]
     )
-    
-    # Log GPU memory if available
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / 1024**3
-        reserved = torch.cuda.memory_reserved() / 1024**3
-        print(f"GPU Memory: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved\n")
+
+    ram_cb = VramBreakdownCallback()
+    trainer.add_callback(ram_cb)
+    def log_memory_stats():
+        """Log current GPU memory statistics"""
+        allocated = torch.cuda.memory_allocated() / 1024**2
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**2
+        reserved = torch.cuda.memory_reserved() / 1024**2
+        
+        logging.info(f"GPU Memory - Allocated: {allocated:.2f} MB, Max Allocated: {max_allocated:.2f} MB, Reserved: {reserved:.2f} MB")
+
+    log_memory_stats()
     
     # ========== Train ==========
-    print("="*70)
-    print("STARTING TRAINING")
-    print("="*70)
-    print("Watch for:")
-    print("  ✅ eval_loss DECREASING (not increasing!)")
-    print("  ✅ accuracy INCREASING")
-    print("  ✅ Both metrics moving correctly together")
-    print("  ❌ If eval_loss increases → early stopping will trigger")
-    print("="*70 + "\n")
-    
+    print("\nStarting training...")
     trainer.train()
     
-    # ========== Final Evaluation ==========
-    print("\n" + "="*70)
-    print("FINAL EVALUATION")
-    print("="*70)
-    eval_results = trainer.evaluate()
-    
-    print(f"\nFinal Results:")
-    print(f"  Eval Loss: {eval_results['eval_loss']:.4f}")
-    print(f"  Accuracy: {eval_results['eval_accuracy']:.4f}")
-    print(f"  Runtime: {eval_results['eval_runtime']:.1f}s")
-    
-    # Check if results are good
-    if eval_results['eval_accuracy'] < 0.30:
-        print(f"\n⚠️  WARNING: Accuracy is still low ({eval_results['eval_accuracy']:.1%})")
-        print("   Expected: >35% for 0.5B model")
-        print("   Possible issues:")
-        print("   - Model too small for task")
-        print("   - Need more epochs")
-        print("   - Try larger model (1.5B or 7B)")
-    elif eval_results['eval_accuracy'] < 0.40:
-        print(f"\n✓ Accuracy is decent ({eval_results['eval_accuracy']:.1%})")
-        print("  This is reasonable for 0.5B model on MMLU")
-    else:
-        print(f"\n✅ Accuracy is good ({eval_results['eval_accuracy']:.1%})")
-        print("  This is excellent for 0.5B model!")
-    
     # ========== Save ==========
-    print("\n" + "="*70)
-    print("SAVING MODEL")
-    print("="*70)
+    print("\nSaving LoRA adapter...")
     model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     
-    print(f"\n✅ Training complete!")
-    print(f"✅ LoRA adapter saved to: {args.output_dir}")
-    print(f"✅ Final accuracy: {eval_results['eval_accuracy']:.4f}")
-    print(f"\nLoad with:")
-    print(f"  from transformers import AutoModelForCausalLM")
-    print(f"  from peft import PeftModel")
+    print(f"\nLoRA adapter saved to: {args.output_dir}")
+    print("Load with:")
     print(f"  base = AutoModelForCausalLM.from_pretrained('{args.model}')")
     print(f"  model = PeftModel.from_pretrained(base, '{args.output_dir}')")
-    print("="*70 + "\n")
 
 if __name__ == "__main__":
     main()
