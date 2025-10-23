@@ -177,7 +177,7 @@ Answer:"""
         choice_logits = logits_at_last[:, CHOICE_TOKEN_IDS.to(device)]
         
         # Get probabilities
-        probs = torch.softmax(choice_logits, dim=1).cpu().numpy()
+        probs = torch.softmax(choice_logits.to(torch.float32), dim=1).cpu().numpy()
         
         # Get predictions
         pred_idx = choice_logits.argmax(dim=1).cpu().numpy()
