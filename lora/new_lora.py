@@ -116,7 +116,7 @@ def tokenize_dataset(task: str, tok, ds, max_len: int):
     # Rename label column if exists
     if "label" in ds_tok["train"].column_names:
         ds_tok = ds_tok.rename_column("label", "labels")
-    
+    print(f"label examples: {ds_tok['train']['labels'][:50]}")
     return ds_tok
 
 # ---------- Metrics ----------
@@ -126,6 +126,9 @@ def make_compute_metrics(task: str):
         logits, labels = eval_pred
         predictions = np.argmax(logits, axis=-1)
         accuracy = accuracy_metric.compute(predictions=predictions, references=labels)
+        print(f"====Logits sample: {logits[0:5]}====")
+        print(f"====Predictions sample: {predictions[0:5]}====")
+        print(f"====Labels sample: {labels[0:5]}====")
         return accuracy 
     return compute_metrics
 
@@ -261,8 +264,8 @@ def wrap_with_lora(base, args, num_labels):
 # ---------- Main ----------
 def main():
     args = parse_args()
-    # SCRATCH_PREFIX = "./"
-    SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
+    SCRATCH_PREFIX = "./"
+    # SCRATCH_PREFIX = "/pscratch/sd/l/lsx/lora"
     if not args.output_dir.startswith(SCRATCH_PREFIX):
         args.output_dir = os.path.join(SCRATCH_PREFIX, args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
@@ -284,6 +287,7 @@ def main():
     else:
         eval_dataset = ds_tok["validation"]
     train_dataset = ds_tok["train"]
+
     
     logging.info(f"Eval samples: {len(eval_dataset)}")
 
@@ -418,6 +422,8 @@ def main():
     else:
         fp16 = args.fp16
         bf16 = args.bf16 or (use_bf16_hw and not args.fp16)
+    # fp16 = False
+    # bf16 = False
     logging.info(f"Training precision - FP16: {fp16}, BF16: {bf16}")
     
     # TrainingArguments
