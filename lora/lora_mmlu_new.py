@@ -105,7 +105,7 @@ def main():
         args.model,
         torch_dtype=torch.bfloat16 if args.bf16 else torch.float32,
         trust_remote_code=True,
-        device_map="auto"
+        # device_map="auto"
     )
 
     model.gradient_checkpointing_enable()  
