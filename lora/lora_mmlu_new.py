@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument("--model", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
     p.add_argument("--dataset", type=str, default="cais/mmlu")
     p.add_argument("--output_dir", type=str, default="/pscratch/sd/l/lsx/lora/qwen05b_fixed")
-    p.add_argument("--max_length", type=int, default=1024)  # FIXED: Increased for chat template
+    p.add_argument("--max_length", type=int, default=768)  # FIXED: Increased for chat template
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--grad_accum", type=int, default=4)  # FIXED: Increased
     p.add_argument("--num_epochs", type=float, default=2.0)  # FIXED: Reduced from 10 to 2
