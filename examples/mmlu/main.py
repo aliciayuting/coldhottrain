@@ -30,9 +30,8 @@ transformers.set_seed(42)
 DATASET = "cais/mmlu"
 MAX_LENGTH = 768
 BATCH_SIZE = 16
-GRADIENT_ACCUMULATION_STEPS = 1
+GRADIENT_ACCUMULATION_STEPS = 2
 LEARNING_RATE = 5e-5
-NUM_EPOCHS = 10
 WARMUP_STEPS = 100
 
 
@@ -44,16 +43,25 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct", help="Model name to use")
     parser.add_argument("--skip-ratio", type=float, default=0.0, help="Skip Ratio for LinearColWise")
+    parser.add_argument("--logging-step", type=int, default=100, help="Logging step interval")
+    parser.add_argument("--eval-step", type=int, default=100, help="Evaluation step interval")
+    parser.add_argument("--epoch", type=int, default=10, help="Number of training epochs")
     args = parser.parse_args()
 
     MODEL_NAME = args.model
     OUTPUT_DIR = f"/pscratch/sd/l/lsx/shouxu_runs/{MODEL_NAME.replace('/', '_')}-{DATASET.replace('/', '_')}"
     skip_ratio = args.skip_ratio
+    logging_step = args.logging_step
+    eval_step = args.eval_step
+    NUM_EPOCHS = args.epoch
 
     if isrank0():
         print(f"Using model: {MODEL_NAME}")
         print(f"Output directory: {OUTPUT_DIR}")
         print(f"Skip ratio: {skip_ratio}")
+        print(f"Logging step: {logging_step}")
+        print(f"Eval step: {eval_step}")
+        print(f"Number of epochs: {NUM_EPOCHS}")
 
     # Load tokenizer
     if isrank0():
@@ -388,7 +396,7 @@ def main():
         save_total_limit=1,
         # eval_strategy="epoch",
         eval_strategy="steps",
-        eval_steps=100,
+        eval_steps=eval_step,
         fp16=False,
         bf16=True,
         optim="adamw_torch",
@@ -404,10 +412,10 @@ def main():
         # load_best_model_at_end=True,
         # metric_for_best_model="eval_loss",
         # greater_is_better=False,
-        max_steps=5,
+        # max_steps=5,
         gradient_checkpointing=True,
         logging_strategy="steps",
-        logging_steps=1,
+        logging_steps=logging_step,
         
     )
 
