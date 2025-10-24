@@ -267,11 +267,20 @@ def main():
     
     # ========== Metrics Helpers ==========
     def _first_answer_pos(labels: torch.Tensor) -> torch.Tensor:
-        not_ign = (labels != -100)
-        first_pos = not_ign.float().argmax(dim=1)
+        # not_ign = (labels != -100)
+        # first_pos = not_ign.float().argmax(dim=1)
+        # has_any = not_ign.any(dim=1)
+        # first_pos = torch.where(has_any, first_pos, torch.full_like(first_pos, -1))
+        # return first_pos
+
+        not_ign = (labels != -100)           # boolean mask
+        flipped = torch.flip(not_ign, dims=[1])
+        last_pos_from_end = flipped.float().argmax(dim=1)
+        last_pos = (not_ign.size(1) - 1) - last_pos_from_end
+
         has_any = not_ign.any(dim=1)
-        first_pos = torch.where(has_any, first_pos, torch.full_like(first_pos, -1))
-        return first_pos
+        last_pos = torch.where(has_any, last_pos, torch.full_like(last_pos, -1))
+        return last_pos
     
     def preprocess_logits_for_metrics(logits, labels):
         if isinstance(logits, (tuple, list)):
@@ -304,9 +313,18 @@ def main():
         four_logits = logits_at_ans.index_select(dim=1, index=choice_ids)
         return four_logits
     
-    def compute_metrics(eval_pred):
-        four_logits = eval_pred.predictions
+    ef compute_metrics(eval_pred):
+        """
+        Modified to extract and display debugging information
+        """
+        extended_preds = eval_pred.predictions
         label_ids = eval_pred.label_ids
+        
+        # Split the extended predictions
+        # Shape: (N, 4 + top_k + top_k)
+        four_logits = extended_preds[:, :4]
+        topk_logits = extended_preds[:, 4:14]  # next 10
+        topk_indices = extended_preds[:, 14:24].astype(int)  # next 10
         
         pred_idx = np.asarray(four_logits).argmax(axis=1)
         
@@ -328,7 +346,7 @@ def main():
         else:
             acc = 0.0
         
-        # NEW: Calculate calibration metrics
+        # Calculate probabilities
         probs = torch.softmax(torch.tensor(four_logits), dim=1).numpy()
         
         # Probability of predicted answer
@@ -337,27 +355,77 @@ def main():
         # Probability of correct answer (for valid examples)
         if gold_valid.any():
             correct_probs = probs[gold_valid, gold_idx[gold_valid]]
-            calibration = correct_probs.mean()  # Higher is better
-            
-            # Simulated loss (approximation)
+            calibration = correct_probs.mean()
             simulated_loss = -np.log(correct_probs + 1e-10).mean()
         else:
             calibration = 0.0
             simulated_loss = 10.0
         
-        # NEW: Prediction distribution check
         pred_counts = np.bincount(pred_idx, minlength=4)
         max_pred_pct = pred_counts.max() / len(pred_idx)
         
-        # NEW: Enhanced logging with diagnostics
-        print(f"\n{'='*70}")
-        print(f"Evaluation Metrics:")
-        print(f"  Accuracy: {acc:.4f}")
+        # ========== NEW: DETAILED DEBUGGING ==========
+        print(f"\n{'='*80}")
+        print(f"EVALUATION DEBUGGING - Showing first {args.debug_samples} examples:")
+        print(f"{'='*80}")
+        
+        for i in range(min(args.debug_samples, len(four_logits))):
+            print(f"\n--- Example {i} ---")
+            
+            # ABCD probabilities
+            abcd_probs = probs[i]
+            print(f"ABCD Probabilities:")
+            for j, letter in enumerate(['A', 'B', 'C', 'D']):
+                token_id = CHOICE_TOKEN_IDS[j].item()
+                print(f"  {letter} (token {token_id}): {abcd_probs[j]:.4f}")
+            
+            # Predicted answer among ABCD
+            pred_letter = ['A', 'B', 'C', 'D'][pred_idx[i]]
+            print(f"Predicted (ABCD only): {pred_letter}")
+            
+            # Gold answer
+            if gold_valid[i]:
+                gold_letter = ['A', 'B', 'C', 'D'][gold_idx[i]]
+                gold_token = gold_token_ids[i].item()
+                print(f"Gold answer: {gold_letter} (token {gold_token})")
+                print(f"Correct: {pred_idx[i] == gold_idx[i]}")
+            else:
+                print(f"Gold answer: INVALID")
+            
+            # Top 10 tokens overall
+            print(f"\nTop 10 tokens by probability (FULL VOCABULARY):")
+            top_probs_full = torch.softmax(torch.tensor(topk_logits[i]), dim=0).numpy()
+            for j in range(10):
+                token_id = topk_indices[i, j]
+                token_str = tokenizer.decode([token_id])
+                prob = top_probs_full[j]
+                
+                # Check if this is one of ABCD
+                is_choice = ""
+                for k, choice_id in enumerate(CHOICE_TOKEN_IDS):
+                    if token_id == choice_id.item():
+                        is_choice = f" ← {['A','B','C','D'][k]}"
+                        break
+                
+                print(f"  #{j+1}: token {token_id:6d} = '{token_str:10s}' prob={prob:.4f}{is_choice}")
+            
+            # Check if argmax is outside ABCD
+            true_argmax_idx = topk_indices[i, 0]
+            true_argmax_token = tokenizer.decode([true_argmax_idx])
+            
+            is_abcd = any(true_argmax_idx == cid.item() for cid in CHOICE_TOKEN_IDS)
+            if not is_abcd:
+                print(f"\n⚠️  TRUE ARGMAX IS NOT IN ABCD!")
+                print(f"   True argmax: token {true_argmax_idx} = '{true_argmax_token}'")
+                print(f"   This explains why loss increases while ABCD-accuracy might stay high!")
+        
+        print(f"\n{'='*80}")
+        print(f"Overall Evaluation Metrics:")
+        print(f"  Accuracy (ABCD only): {acc:.4f}")
         print(f"  Calibration (correct answer prob): {calibration:.4f}")
         print(f"  Simulated loss: {simulated_loss:.4f}")
         print(f"  Prediction confidence (mean): {pred_probs.mean():.4f}")
         
-        # NEW: Model collapse detection
         if max_pred_pct > 0.4:
             print(f"  🚨 MODEL COLLAPSE: {max_pred_pct*100:.1f}% predictions are one answer!")
         elif max_pred_pct > 0.35:
@@ -365,7 +433,6 @@ def main():
         else:
             print(f"  ✅ Predictions balanced: max={max_pred_pct*100:.1f}%")
         
-        # NEW: Calibration warning
         if calibration < 0.3 and acc > 0.3:
             print(f"  ⚠️  Poor calibration: model overconfident in wrong answers")
         elif calibration > 0.5:
@@ -373,7 +440,22 @@ def main():
         
         print(f"  Prediction distribution: A={pred_counts[0]}, B={pred_counts[1]}, "
               f"C={pred_counts[2]}, D={pred_counts[3]}")
-        print(f"{'='*70}\n")
+        
+        # Check how many examples have argmax outside ABCD
+        num_argmax_outside_abcd = 0
+        for i in range(len(topk_indices)):
+            true_argmax = topk_indices[i, 0]
+            is_abcd = any(true_argmax == cid.item() for cid in CHOICE_TOKEN_IDS)
+            if not is_abcd:
+                num_argmax_outside_abcd += 1
+        
+        pct_outside = 100.0 * num_argmax_outside_abcd / len(topk_indices)
+        print(f"\n  📊 Argmax outside ABCD: {num_argmax_outside_abcd}/{len(topk_indices)} ({pct_outside:.1f}%)")
+        if pct_outside > 10:
+            print(f"     ⚠️  Model is frequently predicting tokens outside A,B,C,D!")
+            print(f"     This causes high loss even if ABCD-accuracy looks okay.")
+        
+        print(f"{'='*80}\n")
         return {"accuracy": acc}
     
     # ========== Training Arguments ==========
