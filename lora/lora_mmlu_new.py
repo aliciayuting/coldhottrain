@@ -313,7 +313,7 @@ def main():
         four_logits = logits_at_ans.index_select(dim=1, index=choice_ids)
         return four_logits
     
-    ef compute_metrics(eval_pred):
+    def compute_metrics(eval_pred):
         """
         Modified to extract and display debugging information
         """
