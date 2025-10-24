@@ -285,6 +285,11 @@ def main():
         return last_pos
     
     def preprocess_logits_for_metrics(logits, labels):
+        """
+        Extract ABCD logits and store full vocabulary top-K for debugging
+        """
+        global eval_topk_data
+        
         if isinstance(logits, (tuple, list)):
             logits = logits[0]
         logits = logits.float()
@@ -295,24 +300,24 @@ def main():
         
         bad = (ans_pos < 0)
         if bad.any():
-            # print("!!! Warning: some examples have no answer token; using last non-pad position instead.")
             ans_pos = torch.where(bad, torch.full_like(ans_pos, T - 1), ans_pos)
-            num_bad = bad.sum().item()
-            # print(f"\n!!! WARNING: {num_bad}/{B} examples have no answer token")
             
-            # DEBUG: Print details of first bad example
-            bad_idx = torch.where(bad)[0][0].item()
-            # print(f"First bad example (index {bad_idx}):")
-            # print(f"  Labels shape: {labels[bad_idx].shape}")
-            # print(f"  Labels: {labels[bad_idx].tolist()[:50]}...")  # First 50
-            # print(f"  Non-ignore count: {(labels[bad_idx] != -100).sum().item()}")
-            # print(f"  Unique values: {torch.unique(labels[bad_idx]).tolist()}")
-            ans_pos = torch.where(bad, torch.full_like(ans_pos, T - 1), ans_pos)
         row_idx = torch.arange(B, device=logits.device)
         logits_at_ans = logits[row_idx, ans_pos, :]
         
         choice_ids = CHOICE_TOKEN_IDS.to(logits.device)
         four_logits = logits_at_ans.index_select(dim=1, index=choice_ids)
+        
+        # Store top-K for debugging (to be used in compute_metrics)
+        top_k = 10
+        topk_logits, topk_indices = torch.topk(logits_at_ans, k=top_k, dim=1)
+        
+        # Store in global variable (will be concatenated across batches)
+        eval_topk_data.append({
+            'topk_logits': topk_logits.cpu().numpy(),
+            'topk_indices': topk_indices.cpu().numpy(),
+        })
+        
         return four_logits
     
     def compute_metrics(eval_pred):
@@ -405,32 +410,36 @@ def main():
             else:
                 print(f"Gold answer: INVALID")
             
-            # Top 10 tokens overall
-            print(f"\nTop 10 tokens by probability (FULL VOCABULARY):")
-            top_probs_full = torch.softmax(torch.tensor(topk_logits[i]), dim=0).numpy()
-            for j in range(10):
-                token_id = topk_indices[i, j]
-                token_str = tokenizer.decode([token_id])
-                prob = top_probs_full[j]
+            # Top 10 tokens overall - only if we have valid data
+            if has_valid_topk:
+                print(f"\nTop 10 tokens by probability (FULL VOCABULARY):")
+                top_probs_full = torch.softmax(torch.tensor(topk_logits[i]), dim=0).numpy()
+                for j in range(min(10, topk_indices.shape[1])):
+                    token_id = topk_indices[i, j]
+                    token_str = tokenizer.decode([token_id])
+                    prob = top_probs_full[j] if j < len(top_probs_full) else 0.0
+                    
+                    # Check if this is one of ABCD
+                    is_choice = ""
+                    for k, choice_id in enumerate(CHOICE_TOKEN_IDS):
+                        if token_id == choice_id.item():
+                            is_choice = f" ← {['A','B','C','D'][k]}"
+                            break
+                    
+                    print(f"  #{j+1}: token {token_id:6d} = '{token_str:10s}' prob={prob:.4f}{is_choice}")
                 
-                # Check if this is one of ABCD
-                is_choice = ""
-                for k, choice_id in enumerate(CHOICE_TOKEN_IDS):
-                    if token_id == choice_id.item():
-                        is_choice = f" ← {['A','B','C','D'][k]}"
-                        break
-                
-                print(f"  #{j+1}: token {token_id:6d} = '{token_str:10s}' prob={prob:.4f}{is_choice}")
-            
-            # Check if argmax is outside ABCD
-            true_argmax_idx = topk_indices[i, 0]
-            true_argmax_token = tokenizer.decode([true_argmax_idx])
-            
-            is_abcd = any(true_argmax_idx == cid.item() for cid in CHOICE_TOKEN_IDS)
-            if not is_abcd:
-                print(f"\n⚠️  TRUE ARGMAX IS NOT IN ABCD!")
-                print(f"   True argmax: token {true_argmax_idx} = '{true_argmax_token}'")
-                print(f"   This explains why loss increases while ABCD-accuracy might stay high!")
+                # Check if argmax is outside ABCD
+                if topk_indices.shape[1] > 0:
+                    true_argmax_idx = topk_indices[i, 0]
+                    true_argmax_token = tokenizer.decode([true_argmax_idx])
+                    
+                    is_abcd = any(true_argmax_idx == cid.item() for cid in CHOICE_TOKEN_IDS)
+                    if not is_abcd:
+                        print(f"\n⚠️  TRUE ARGMAX IS NOT IN ABCD!")
+                        print(f"   True argmax: token {true_argmax_idx} = '{true_argmax_token}'")
+                        print(f"   This explains why loss increases while ABCD-accuracy might stay high!")
+            else:
+                print(f"\n[WARNING] Top-K data not available or malformed")
         
         print(f"\n{'='*80}")
         print(f"Overall Evaluation Metrics:")
