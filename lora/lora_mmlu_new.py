@@ -52,6 +52,8 @@ def parse_args():
     p.add_argument("--fp16", action="store_true", help="Use FP16")
     p.add_argument("--label_smoothing", type=float, default=0.1,
                    help="Label smoothing factor (0.1 recommended for calibration)")
+    p.add_argument("--debug_samples", type=int, default=5,
+                   help="Number of samples to print detailed debug info for")
     return p.parse_args()
 
 def main():
@@ -352,13 +354,20 @@ def main():
         # Probability of predicted answer
         pred_probs = probs[np.arange(len(pred_idx)), pred_idx]
         
-        # Probability of correct answer (for valid examples)
+        # ========== NEW: ABCD-only Cross Entropy Loss ==========
+        # This is the loss if we only considered A,B,C,D tokens
         if gold_valid.any():
+            # Get probabilities of correct answers (renormalized over ABCD only)
             correct_probs = probs[gold_valid, gold_idx[gold_valid]]
+            
+            # Cross-entropy loss (ABCD-only)
+            abcd_only_loss = -np.log(correct_probs + 1e-10).mean()
+            
             calibration = correct_probs.mean()
-            simulated_loss = -np.log(correct_probs + 1e-10).mean()
+            simulated_loss = abcd_only_loss  # Keep backward compatibility
         else:
             calibration = 0.0
+            abcd_only_loss = 10.0
             simulated_loss = 10.0
         
         pred_counts = np.bincount(pred_idx, minlength=4)
@@ -387,7 +396,11 @@ def main():
             if gold_valid[i]:
                 gold_letter = ['A', 'B', 'C', 'D'][gold_idx[i]]
                 gold_token = gold_token_ids[i].item()
+                gold_prob_abcd = probs[i, gold_idx[i]]
+                example_abcd_loss = -np.log(gold_prob_abcd + 1e-10)
                 print(f"Gold answer: {gold_letter} (token {gold_token})")
+                print(f"Gold probability (ABCD-only): {gold_prob_abcd:.4f}")
+                print(f"ABCD-only CE Loss (this example): {example_abcd_loss:.4f}")
                 print(f"Correct: {pred_idx[i] == gold_idx[i]}")
             else:
                 print(f"Gold answer: INVALID")
@@ -422,8 +435,8 @@ def main():
         print(f"\n{'='*80}")
         print(f"Overall Evaluation Metrics:")
         print(f"  Accuracy (ABCD only): {acc:.4f}")
+        print(f"  ABCD-only Cross Entropy Loss: {abcd_only_loss:.4f}")
         print(f"  Calibration (correct answer prob): {calibration:.4f}")
-        print(f"  Simulated loss: {simulated_loss:.4f}")
         print(f"  Prediction confidence (mean): {pred_probs.mean():.4f}")
         
         if max_pred_pct > 0.4:
@@ -454,6 +467,44 @@ def main():
         if pct_outside > 10:
             print(f"     ⚠️  Model is frequently predicting tokens outside A,B,C,D!")
             print(f"     This causes high loss even if ABCD-accuracy looks okay.")
+        
+        # ========== NEW: Estimate full vocabulary loss for comparison ==========
+        # For examples where we have gold answers, estimate what the loss would be
+        # if we considered the full vocabulary
+        if gold_valid.any():
+            full_vocab_loss_estimates = []
+            for i in range(len(topk_indices)):
+                if not gold_valid[i]:
+                    continue
+                    
+                gold_token = gold_token_ids[i].item()
+                
+                # Check if gold token is in top-K
+                top_k_tokens = topk_indices[i]
+                if gold_token in top_k_tokens:
+                    # Find position
+                    pos = np.where(top_k_tokens == gold_token)[0][0]
+                    # Get probability (need to softmax the top-k logits)
+                    top_k_probs = torch.softmax(torch.tensor(topk_logits[i]), dim=0).numpy()
+                    gold_prob_full = top_k_probs[pos]
+                else:
+                    # Gold token not in top-10, assume very low probability
+                    gold_prob_full = 1e-6
+                
+                full_vocab_loss_estimates.append(-np.log(gold_prob_full + 1e-10))
+            
+            if full_vocab_loss_estimates:
+                estimated_full_vocab_loss = np.mean(full_vocab_loss_estimates)
+                print(f"\n  📉 Loss Comparison:")
+                print(f"     ABCD-only loss: {abcd_only_loss:.4f}")
+                print(f"     Estimated full-vocab loss: {estimated_full_vocab_loss:.4f}")
+                print(f"     Difference: {estimated_full_vocab_loss - abcd_only_loss:.4f}")
+                
+                if estimated_full_vocab_loss > abcd_only_loss + 0.5:
+                    print(f"     ⚠️  Full-vocab loss is MUCH higher!")
+                    print(f"     This indicates the model assigns low probability to correct tokens")
+                    print(f"     in the full vocabulary, even though ABCD-only metrics look okay.")
+        
         
         print(f"{'='*80}\n")
         return {"accuracy": acc}
