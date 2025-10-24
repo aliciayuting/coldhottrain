@@ -283,7 +283,7 @@ def main():
         has_any = not_ign.any(dim=1)
         last_pos = torch.where(has_any, last_pos, torch.full_like(last_pos, -1))
         return last_pos
-    
+    eval_topk_data = []
     def preprocess_logits_for_metrics(logits, labels):
         """
         Extract ABCD logits and store full vocabulary top-K for debugging
