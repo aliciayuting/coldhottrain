@@ -41,8 +41,8 @@ class SuperGlueDataset:
         # select a subset for debugging
         for subset in raw_datasets.keys():
             # if data_args.debug:
-            raw_datasets[subset] = raw_datasets[subset].select(range(2))
-            logger.info(f"{subset} dataset: {len(raw_datasets[subset])} samples")
+            raw_datasets[subset] = raw_datasets[subset].select(range(1000))
+            print(f"{subset} dataset: {len(raw_datasets[subset])} samples")
 
 
 
@@ -83,10 +83,6 @@ class SuperGlueDataset:
                 f"model ({tokenizer.model_max_length}). Using max_seq_length={tokenizer.model_max_length}."
             )
         self.max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
-
-
-        for subset in raw_datasets.keys():
-            print(f"Tokenizing the {subset} dataset, length: {len(raw_datasets[subset])} samples")
 
         if data_args.task_name == "record":
             raw_datasets = raw_datasets.map(

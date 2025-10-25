@@ -38,16 +38,14 @@ class GlueDataset:
         if name:
             self.name = name
             data_args.task_name = name
-        logger.warning("!!!!!!! hello glue dataset !!!!!!!")
 
         raw_datasets = load_dataset("glue", data_args.task_name)
         # select a subset for debugging
         for subset in raw_datasets.keys():
             # if data_args.debug:
-            raw_datasets[subset] = raw_datasets[subset].select(range(2))
-            logger.info(f"{subset} dataset: {len(raw_datasets[subset])} samples")
+            raw_datasets[subset] = raw_datasets[subset].select(range(1000))
+            print(f"{subset} dataset: {len(raw_datasets[subset])} samples")
 
-        
         
 
         self.tokenizer = tokenizer
@@ -84,9 +82,6 @@ class GlueDataset:
             )
         self.max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
 
-
-        for subset in raw_datasets.keys():
-            print(f"Tokenizing the {subset} dataset, length: {len(raw_datasets[subset])} samples")
 
         with training_args.main_process_first(desc="dataset map pre-processing"):
             raw_datasets = raw_datasets.map(

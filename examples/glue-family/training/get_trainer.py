@@ -26,40 +26,38 @@ logger = logging.getLogger(__name__)
 
 
 def get_trainer(args):
-    print(f"111111111")
 
 
 
 
 
+    (
+        model_args,
+        data_args,
+        training_args,
+        # adapter_args,
+        # fusion_args,
+        # mtl_2_args,
+    ) = get_args()
 
-    # (
-    #     model_args,
-    #     data_args,
-    #     training_args,
-    #     # adapter_args,
-    #     # fusion_args,
-    #     # mtl_2_args,
-    # ) = get_args()
-
-    # tokenizer = AutoTokenizer.from_pretrained(
-    #     model_args.tokenizer_name
-    #     if model_args.tokenizer_name
-    #     else model_args.model_name_or_path,
-    #     cache_dir=model_args.cache_dir,
-    #     use_fast=model_args.use_fast_tokenizer,
-    #     revision=model_args.model_revision,
-    #     use_auth_token=True if model_args.use_auth_token else None,
-    # )
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.tokenizer_name
+        if model_args.tokenizer_name
+        else model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
+        use_fast=model_args.use_fast_tokenizer,
+        revision=model_args.model_revision,
+        use_auth_token=True if model_args.use_auth_token else None,
+    )
 
     print(f"2222222")
-    # if data_args.task_name.lower() in GLUE_DATASETS:
-    #     dataset = GlueDataset(tokenizer, data_args, training_args)
-    # elif data_args.task_name.lower() in SUPERGLUE_DATASETS:
-    #     dataset = SuperGlueDataset(tokenizer, data_args, training_args)
-    # # elif data_args.dataset_name == "humset":
-    # #     dataset = HumsetDataset(tokenizer, data_args, training_args)
-    # logger.info(dataset.train_dataset, dataset.eval_dataset, dataset.test_dataset)
+    if data_args.task_name.lower() in GLUE_DATASETS:
+        dataset = GlueDataset(tokenizer, data_args, training_args)
+    elif data_args.task_name.lower() in SUPERGLUE_DATASETS:
+        dataset = SuperGlueDataset(tokenizer, data_args, training_args)
+    # elif data_args.dataset_name == "humset":
+    #     dataset = HumsetDataset(tokenizer, data_args, training_args)
+    logger.info(dataset.train_dataset if training_args.do_train else None, dataset.eval_dataset if training_args.do_train else None, dataset.test_dataset if training_args.do_eval else None)
 
     # if not dataset.is_regression and not dataset.multiple_choice:
     #     config = AutoConfig.from_pretrained(
@@ -400,3 +398,4 @@ def get_trainer(args):
     # )
 
     # return trainer, model, dataset, adapter_setup
+    return None, None, dataset, None
