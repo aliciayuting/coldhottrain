@@ -6,8 +6,8 @@ import sys
 import datasets
 
 import transformers
-# from arguments import get_args
-# from tasks.utils import GLUE_DATASETS, SUPERGLUE_DATASETS, TASKS
+from arguments import get_args
+from tasks.utils import GLUE_DATASETS, SUPERGLUE_DATASETS, TASKS
 # from training.get_trainer import get_trainer
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
@@ -15,6 +15,26 @@ from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
 
+logger = logging.getLogger(__name__)
+
+def setup_logging(training_args: transformers.TrainingArguments) -> None:
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    log_level = training_args.get_process_log_level()
+    logger.setLevel(log_level)
+    datasets.utils.logging.set_verbosity(log_level)
+    transformers.utils.logging.set_verbosity(log_level)
+    transformers.utils.logging.enable_default_handler()
+    transformers.utils.logging.enable_explicit_format()
+    # Log on each process the small summary:
+    logger.warning(
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+        + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+    )
+    logger.info(f"Training/evaluation parameters {training_args}")
 
 def main() -> None:
     args = get_args()
@@ -22,10 +42,16 @@ def main() -> None:
         model_args,
         data_args,
         training_args,
-        adapter_args,
-        fusion_args,
-        mtl_args,
+        # adapter_args,
+        # fusion_args,
+        # mtl_args,
     ) = args
+
+
+    # print out args
+    print("Model Arguments:", model_args)
+    print("Data Arguments:", data_args)
+    print("Training Arguments:", training_args)
 
     os.environ["WANDB_WATCH"] = "false"
     os.environ["WANDB_LOG_MODEL "] = "false"
@@ -37,25 +63,26 @@ def main() -> None:
 
     setup_logging(training_args)
 
-    # if not data_args.dataset_name:
-    #     # infer dataset and task from task_name
-    #     if data_args.task_name.lower() in GLUE_DATASETS:
-    #         data_args.dataset_name = "glue"
-    #     elif data_args.task_name.lower() in SUPERGLUE_DATASETS:
-    #         data_args.dataset_name = "superglue"
-    #     elif data_args.dataset_name != "humset":
-    #         raise ValueError(
-    #             f"Task {data_args.task_name} not found. Should be one of {TASKS}"
-    #         )
-    # print("dataset_name", data_args.dataset_name)
-    # print("task_name", data_args.task_name)
+    if not data_args.dataset_name:
+        # infer dataset and task from task_name
+        if data_args.task_name.lower() in GLUE_DATASETS:
+            data_args.dataset_name = "glue"
+        elif data_args.task_name.lower() in SUPERGLUE_DATASETS:
+            data_args.dataset_name = "superglue"
+        elif data_args.dataset_name != "humset":
+            raise ValueError(
+                f"Task {data_args.task_name} not found. Should be one of {TASKS}"
+            )
+    print("dataset_name", data_args.dataset_name)
+    print("task_name", data_args.task_name)
 
-    # if not data_args.eval_adapter:
-    #     last_checkpoint = detect_last_checkpoint(training_arguments=training_args)
-    # else:
-    #     last_checkpoint = None
+    if not data_args.eval_adapter:
+        assert False
+        last_checkpoint = detect_last_checkpoint(training_arguments=training_args)
+    else:
+        last_checkpoint = None
 
-    # set_seed(training_args.seed)
+    set_seed(training_args.seed)
 
     # trainer, model, dataset, adapter_setup = get_trainer(args=args)
 
