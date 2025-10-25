@@ -8,7 +8,7 @@ import datasets
 import transformers
 from arguments import get_args
 from tasks.utils import GLUE_DATASETS, SUPERGLUE_DATASETS, TASKS
-# from training.get_trainer import get_trainer
+from training.get_trainer import get_trainer
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
@@ -76,15 +76,16 @@ def main() -> None:
     print("dataset_name", data_args.dataset_name)
     print("task_name", data_args.task_name)
 
-    if not data_args.eval_adapter:
-        assert False
-        last_checkpoint = detect_last_checkpoint(training_arguments=training_args)
-    else:
-        last_checkpoint = None
+    # if not data_args.eval_adapter:
+    #     assert False
+    #     last_checkpoint = detect_last_checkpoint(training_arguments=training_args)
+    # else:
+    #     last_checkpoint = None
+    last_checkpoint = None
 
     set_seed(training_args.seed)
 
-    # trainer, model, dataset, adapter_setup = get_trainer(args=args)
+    trainer, model, dataset, adapter_setup = get_trainer(args=args)
 
     # if training_args.do_train:
     #     # Log a few random samples from the training set:

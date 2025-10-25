@@ -6,13 +6,13 @@ from collections import OrderedDict
 from arguments import get_args
 from model.utils import TaskType, get_model
 from tasks.glue.dataset import GlueDataset
-from tasks.humset.dataset import HumsetDataset
+# from tasks.humset.dataset import HumsetDataset
 from tasks.superglue.dataset import SuperGlueDataset
 from tasks.utils import GLUE_DATASETS, SUPERGLUE_DATASETS
 from torchinfo import summary
-from training.utils import get_default_args, map_omega_grid
+# from training.utils import get_default_args, map_omega_grid
 from transformers import (
-    AdapterTrainer,
+    # AdapterTrainer,
     AutoConfig,
     AutoTokenizer,
     EarlyStoppingCallback,
@@ -30,9 +30,9 @@ def get_trainer(args):
         model_args,
         data_args,
         training_args,
-        adapter_args,
-        fusion_args,
-        mtl_2_args,
+        # adapter_args,
+        # fusion_args,
+        # mtl_2_args,
     ) = get_args()
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -48,8 +48,8 @@ def get_trainer(args):
         dataset = GlueDataset(tokenizer, data_args, training_args)
     elif data_args.task_name.lower() in SUPERGLUE_DATASETS:
         dataset = SuperGlueDataset(tokenizer, data_args, training_args)
-    elif data_args.dataset_name == "humset":
-        dataset = HumsetDataset(tokenizer, data_args, training_args)
+    # elif data_args.dataset_name == "humset":
+    #     dataset = HumsetDataset(tokenizer, data_args, training_args)
     logger.info(dataset.train_dataset, dataset.eval_dataset, dataset.test_dataset)
 
     if not dataset.is_regression and not dataset.multiple_choice:
@@ -77,6 +77,7 @@ def get_trainer(args):
             use_auth_token=True if model_args.use_auth_token else None,
         )
     if data_args.dataset_name == "humset":
+        assert False
         config.problem_type = "multi_label_classification"
 
     # ProPETL related args
@@ -240,28 +241,29 @@ def get_trainer(args):
 
     # Single-task adapters (Pfeiffer, Compacter++, ProPETL)
     elif adapter_args.train_adapter:
+        assert False
         # PROBING RUNS
         # 2 omega values; summed up
-        if data_args.omega_grid and mtl_2_args.scalearn_type == "omega_grid":
-            omega_grid = map_omega_grid(
-                config=data_args.omega_grid,
-                seed=training_args.seed,
-                adapter_type=adapter_args.adapter_config,
-            )
-            for adapter_dir, _ in omega_grid.items():
-                logger.info(adapter_dir)
-                model.load_adapter(
-                    f"{os.path.expanduser('~')}/ScaLearn/src/" + adapter_dir,
-                    with_head=False,
-                )
-            # get tasks from omega_grid
-            source_tasks = [l.split("/")[2] for l in list(omega_grid.keys())]
-            # create dict: task -> omega
-            omega_grid = {l.split("/")[2]: i for l, i in list(omega_grid.items())}
-            model.add_scalearn(
-                source_tasks, mtl_2_args.scalearn_type, grid_values=omega_grid
-            )
-            model.train_transfer_layer([source_tasks], unfreeze_adapters=False)
+        # if data_args.omega_grid and mtl_2_args.scalearn_type == "omega_grid":
+        #     omega_grid = map_omega_grid(
+        #         config=data_args.omega_grid,
+        #         seed=training_args.seed,
+        #         adapter_type=adapter_args.adapter_config,
+        #     )
+        #     for adapter_dir, _ in omega_grid.items():
+        #         logger.info(adapter_dir)
+        #         model.load_adapter(
+        #             f"{os.path.expanduser('~')}/ScaLearn/src/" + adapter_dir,
+        #             with_head=False,
+        #         )
+        #     # get tasks from omega_grid
+        #     source_tasks = [l.split("/")[2] for l in list(omega_grid.keys())]
+        #     # create dict: task -> omega
+        #     omega_grid = {l.split("/")[2]: i for l, i in list(omega_grid.items())}
+        #     model.add_scalearn(
+        #         source_tasks, mtl_2_args.scalearn_type, grid_values=omega_grid
+        #     )
+        #     model.train_transfer_layer([source_tasks], unfreeze_adapters=False)
         # 1/2 omega values
         if data_args.eval_adapter:
             assert False
