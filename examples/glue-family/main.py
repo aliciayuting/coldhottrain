@@ -13,8 +13,20 @@ from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
+import torch.distributed as dist
 
-
+def safe_destroy():
+    if dist.is_available() and dist.is_initialized():
+        try:
+            # Optional but helpful to flush in-flight NCCL ops
+            dist.barrier()
+        except Exception:
+            pass
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+        
 logger = logging.getLogger(__name__)
 
 def setup_logging(training_args: transformers.TrainingArguments) -> None:
@@ -35,6 +47,57 @@ def setup_logging(training_args: transformers.TrainingArguments) -> None:
         + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
     )
     logger.info(f"Training/evaluation parameters {training_args}")
+    
+    
+def train_fn(trainer, training_args, last_checkpoint=None):
+    checkpoint = None
+    if training_args.resume_from_checkpoint is not None:
+        checkpoint = training_args.resume_from_checkpoint
+    elif last_checkpoint is not None:
+        checkpoint = last_checkpoint
+    train_result = trainer.train(resume_from_checkpoint=checkpoint)
+    metrics = train_result.metrics
+    metrics["train_samples"] = len(trainer.train_dataset)
+
+    trainer.save_model()  # Saves the tokenizer too for easy upload
+
+    trainer.log_metrics("train", metrics)
+    trainer.save_metrics("train", metrics)
+    trainer.save_state()
+    
+    
+def evaluate_fn(trainer, data_args, dataset):
+    # Loop to handle MNLI double evaluation (matched, mis-matched)
+    tasks = [data_args.task_name]
+    test_datasets = [dataset.test_dataset]
+    if data_args.task_name == "mnli":
+        tasks.append("mnli-mm")
+        valid_mm_dataset = dataset.test_dataset_mm
+        if data_args.max_eval_samples is not None:
+            max_eval_samples = min(len(valid_mm_dataset), data_args.max_eval_samples)
+            valid_mm_dataset = valid_mm_dataset.select(range(max_eval_samples))
+        test_datasets.append(valid_mm_dataset)
+        combined = {}
+
+    for ds, task in zip(test_datasets, tasks):
+        metrics = trainer.evaluate(eval_dataset=ds, metric_key_prefix="test")
+
+        max_eval_samples = (
+            data_args.max_eval_samples
+            if data_args.max_eval_samples is not None
+            else len(ds)
+        )
+        metrics["test_samples"] = min(max_eval_samples, len(ds))
+
+        if task == "mnli-mm":
+            metrics = {k + "_mm": v for k, v in metrics.items()}
+        if task is not None and "mnli" in task:
+            combined.update(metrics)
+
+        trainer.log_metrics("test", metrics)
+        trainer.save_metrics(
+            "test", combined if task is not None and "mnli" in task else metrics
+        )
 
 def main() -> None:
     args = get_args()
@@ -85,16 +148,16 @@ def main() -> None:
 
     set_seed(training_args.seed)
 
-    trainer, model, dataset, adapter_setup = get_trainer(args=args)
+    trainer, model, dataset, _ = get_trainer(args=args)
 
-    # if training_args.do_train:
-    #     # Log a few random samples from the training set:
-    #     for index in random.sample(range(len(dataset.train_dataset)), 3):
-    #         logger.info(
-    #             f"Sample {index} of the training set: {dataset.train_dataset[index]}."
-    #         )
+    if training_args.do_train:
+        # Log a few random samples from the training set:
+        for index in random.sample(range(len(dataset.train_dataset)), 3):
+            logger.info(
+                f"Sample {index} of the training set: {dataset.train_dataset[index]}."
+            )
 
-    #     train_fn(trainer, training_args, last_checkpoint)
+        train_fn(trainer, training_args, last_checkpoint)
 
     # # save adapter
     # if fusion_args.train_fusion and not fusion_args.fusion_type == "soup":
@@ -114,9 +177,9 @@ def main() -> None:
     #     elif not mtl_args.scalearn_type:
     #         model.save_adapter(training_args.output_dir, data_args.task_name)
 
-    # if training_args.do_eval:
-    #     logger.info("*** Evaluate ***")
-    #     evaluate_fn(trainer, data_args, dataset)
+    if training_args.do_eval:
+        logger.info("*** Evaluate ***")
+        evaluate_fn(trainer, data_args, dataset)
 
     # kwargs = {
     #     "finetuned_from": model_args.model_name_or_path,
@@ -139,7 +202,7 @@ def main() -> None:
     # else:
     #     trainer.create_model_card(**kwargs)
 
-
+    safe_destroy()
 
 
 if __name__ == "__main__":

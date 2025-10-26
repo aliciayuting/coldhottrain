@@ -38,11 +38,11 @@ class SuperGlueDataset:
         logger.warning("!!!!!!! hello glue dataset !!!!!!!")
         raw_datasets = load_dataset("super_glue", data_args.task_name)
 
-        # select a subset for debugging
-        for subset in raw_datasets.keys():
-            # if data_args.debug:
-            raw_datasets[subset] = raw_datasets[subset].select(range(1000))
-            print(f"{subset} dataset: {len(raw_datasets[subset])} samples")
+        # # select a subset for debugging
+        # for subset in raw_datasets.keys():
+        #     # if data_args.debug:
+        #     raw_datasets[subset] = raw_datasets[subset].select(range(1000))
+        #     print(f"{subset} dataset: {len(raw_datasets[subset])} samples")
 
 
 

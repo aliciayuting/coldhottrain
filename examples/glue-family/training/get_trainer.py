@@ -50,7 +50,6 @@ def get_trainer(args):
         use_auth_token=True if model_args.use_auth_token else None,
     )
 
-    print(f"2222222")
     if data_args.task_name.lower() in GLUE_DATASETS:
         dataset = GlueDataset(tokenizer, data_args, training_args)
     elif data_args.task_name.lower() in SUPERGLUE_DATASETS:
@@ -59,30 +58,30 @@ def get_trainer(args):
     #     dataset = HumsetDataset(tokenizer, data_args, training_args)
     logger.info(dataset.train_dataset if training_args.do_train else None, dataset.eval_dataset if training_args.do_train else None, dataset.test_dataset if training_args.do_eval else None)
 
-    # if not dataset.is_regression and not dataset.multiple_choice:
-    #     config = AutoConfig.from_pretrained(
-    #         model_args.config_name
-    #         if model_args.config_name
-    #         else model_args.model_name_or_path,
-    #         num_labels=dataset.num_labels,
-    #         label2id=dataset.label2id,
-    #         id2label=dataset.id2label,
-    #         finetuning_task=data_args.task_name,
-    #         revision=model_args.model_revision,
-    #         cache_dir=model_args.cache_dir,
-    #         use_auth_token=True if model_args.use_auth_token else None,
-    #     )
-    # else:
-    #     config = AutoConfig.from_pretrained(
-    #         model_args.config_name
-    #         if model_args.config_name
-    #         else model_args.model_name_or_path,
-    #         num_labels=dataset.num_labels,
-    #         finetuning_task=data_args.task_name,
-    #         revision=model_args.model_revision,
-    #         cache_dir=model_args.cache_dir,
-    #         use_auth_token=True if model_args.use_auth_token else None,
-    #     )
+    if not dataset.is_regression and not dataset.multiple_choice:
+        config = AutoConfig.from_pretrained(
+            model_args.config_name
+            if model_args.config_name
+            else model_args.model_name_or_path,
+            num_labels=dataset.num_labels,
+            label2id=dataset.label2id,
+            id2label=dataset.id2label,
+            finetuning_task=data_args.task_name,
+            revision=model_args.model_revision,
+            cache_dir=model_args.cache_dir,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+    else:
+        config = AutoConfig.from_pretrained(
+            model_args.config_name
+            if model_args.config_name
+            else model_args.model_name_or_path,
+            num_labels=dataset.num_labels,
+            finetuning_task=data_args.task_name,
+            revision=model_args.model_revision,
+            cache_dir=model_args.cache_dir,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
     # if data_args.dataset_name == "humset":
     #     assert False
     #     config.problem_type = "multi_label_classification"
@@ -91,14 +90,14 @@ def get_trainer(args):
     # config.share_adapter = model_args.share_adapter
     # config.sparsity = model_args.sparsity
 
-    # if not dataset.multiple_choice:
-    #     model = get_model(
-    #         args=args, task_type=TaskType.SEQUENCE_CLASSIFICATION, config=config
-    #     )
-    # else:
-    #     model = get_model(args=args, task_type=TaskType.MULTIPLE_CHOICE, config=config)
+    if not dataset.multiple_choice:
+        model = get_model(
+            args=args, task_type=TaskType.SEQUENCE_CLASSIFICATION, config=config
+        )
+    else:
+        model = get_model(args=args, task_type=TaskType.MULTIPLE_CHOICE, config=config)
 
-    # adapter_setup = None
+    adapter_setup = None
     # # ScaLearn + AdapterFusion
     # if fusion_args.train_fusion:
     #     af_config = json.load(open(fusion_args.fusion_load_dir))
@@ -358,44 +357,47 @@ def get_trainer(args):
     #             "Use --train_adapter to enable adapter training"
     #         )
 
-    # param_optimizer = list(model.named_parameters())
-    # logger.info("Trainable parameters:")
-    # for n, p in param_optimizer:
-    #     if p.requires_grad:
-    #         logger.info(f"{n}")
+    param_optimizer = list(model.named_parameters())
+    logger.info("Trainable parameters:")
+    for n, p in param_optimizer:
+        if p.requires_grad:
+            logger.info(f"{n}")
 
     # trainer_cls = (
     #     AdapterTrainer
     #     if (adapter_args.train_adapter or fusion_args.train_fusion)
     #     else Trainer
     # )
+    
+    trainer_cls = Trainer
 
-    # # early stopping
-    # if model_args.early_stopping:
-    #     logger.info(
-    #         "Early stopping is enabled with patience %d",
-    #         model_args.early_stopping_patience,
-    #     )
-    #     early_stopping_callback = [
-    #         EarlyStoppingCallback(
-    #             early_stopping_patience=model_args.early_stopping_patience
-    #         )
-    #     ]
-    # else:
-    #     early_stopping_callback = []
+    # early stopping
+    if model_args.early_stopping:
+        logger.info(
+            "Early stopping is enabled with patience %d",
+            model_args.early_stopping_patience,
+        )
+        early_stopping_callback = [
+            EarlyStoppingCallback(
+                early_stopping_patience=model_args.early_stopping_patience
+            )
+        ]
+    else:
+        early_stopping_callback = []
 
-    # logger.info(summary(model, depth=5))
+    logger.info(summary(model, depth=5))
 
-    # trainer = trainer_cls(
-    #     model=model,
-    #     args=training_args,
-    #     train_dataset=dataset.train_dataset if training_args.do_train else None,
-    #     eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
-    #     compute_metrics=dataset.compute_metrics,
-    #     tokenizer=tokenizer,
-    #     data_collator=dataset.data_collator,
-    #     callbacks=early_stopping_callback,
-    # )
+    trainer = trainer_cls(
+        model=model,
+        args=training_args,
+        train_dataset=dataset.train_dataset if training_args.do_train else None,
+        eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
+        compute_metrics=dataset.compute_metrics,
+        tokenizer=tokenizer,
+        data_collator=dataset.data_collator,
+        callbacks=early_stopping_callback,
+    )
 
     # return trainer, model, dataset, adapter_setup
-    return None, None, dataset, None
+    return trainer, model, dataset, None
+    # return None, None, dataset, None

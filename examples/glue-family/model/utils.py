@@ -35,12 +35,13 @@ def get_model(
         model_args,
         data_args,
         training_args,
-        adapter_args,
-        fusion_args,
-        mtl_args,
+        # adapter_args,
+        # fusion_args,
+        # mtl_args,
     ) = args
 
-    if adapter_args.train_adapter:
+    # if adapter_args.train_adapter:
+    if False:
         assert False
         # We use the AutoAdapterModel class here for better adapter support.
         # model = AutoAdapterModel.from_pretrained(
