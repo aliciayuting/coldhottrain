@@ -1,9 +1,10 @@
-RUN_NAME=full-ft-2e-5
+RUN_NAME=ft-skip
 TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
+SKIP_RATIO=0.8
 
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/$RUN_NAME/$TASK/$MODEL_NAME/debug
+OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK/$MODEL_NAME/$SKIP_RATIO/$SEED
 
 
 CUDA_VISIBLE_DEVICES=0 python main.py \
@@ -32,11 +33,11 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
     --logging_dir $OUTPUT_PATH/logs \
-    --fp16 \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
-    --my_debug \
     --skip_ratio 0.8 \
+    --max_steps 5 \
+    --fp16 \
 
 
     
