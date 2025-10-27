@@ -3,7 +3,7 @@ TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
 
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/$RUN_NAME/$TASK/$MODEL_NAME/$SEED
+OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/$RUN_NAME/$TASK/$MODEL_NAME/debug
 
 
 CUDA_VISIBLE_DEVICES=0 python main.py \
@@ -16,14 +16,14 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --per_device_eval_batch_size 32 \
     --dataloader_num_workers 0 \
     --learning_rate 2e-5 \
-    --num_train_epochs 30 \
+    --num_train_epochs 5 \
     --logging_strategy steps \
     --logging_steps 100 \
-    --save_strategy epoch \
-    --save_steps 1 \
+    --save_strategy steps \
+    --save_steps 500 \
     --save_total_limit 3 \
-    --eval_strategy epoch \
-    --eval_steps 1 \
+    --eval_strategy steps \
+    --eval_steps 500 \
     --early_stopping True \
     --early_stopping_patience 5 \
     --load_best_model_at_end True \
@@ -34,7 +34,9 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --logging_dir $OUTPUT_PATH/logs \
     --fp16 \
     --overwrite_output_dir \
-    --ddp_find_unused_parameters False
+    --ddp_find_unused_parameters False \
+    --my_debug \
+    --skip_ratio 0.8 \
 
 
     

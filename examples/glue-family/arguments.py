@@ -327,6 +327,22 @@ class ModelArguments:
 #     )
 
 
+@dataclass
+class ColdNeuronArguments:
+    # scalearn_type: str = field(
+    #     default=None, metadata={"help": "Type of scalearn to perform."}
+    # )
+    my_debug: bool = field(
+        default=False, metadata={"help": "Whether to enable debugging."}
+    )
+
+    skip_ratio: float = field(
+        default=0.0, metadata={"help": "The skip ratio for cold neuron training."}
+    )
+
+    
+
+
 def get_args():
     """Parse all the args."""
     parser = HfArgumentParser(
@@ -337,6 +353,7 @@ def get_args():
             # AdapterArguments,
             # FusionArguments,
             # TwoStageMTLArguments,
+            ColdNeuronArguments
         )
     )
 

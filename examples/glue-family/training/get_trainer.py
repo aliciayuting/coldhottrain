@@ -26,11 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 def get_trainer(args):
-
-
-
-
-
     (
         model_args,
         data_args,
@@ -38,6 +33,7 @@ def get_trainer(args):
         # adapter_args,
         # fusion_args,
         # mtl_2_args,
+        coldneuron_args,
     ) = get_args()
 
     tokenizer = AutoTokenizer.from_pretrained(

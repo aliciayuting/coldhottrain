@@ -13,6 +13,7 @@ from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
+from model.utils import fix_linear_modules
 import torch.distributed as dist
 
 def safe_destroy():
@@ -108,6 +109,7 @@ def main() -> None:
         # adapter_args,
         # fusion_args,
         # mtl_args,
+        coldneuron_args,
     ) = args
 
 
@@ -115,6 +117,7 @@ def main() -> None:
     print("Model Arguments:", model_args)
     print("Data Arguments:", data_args)
     print("Training Arguments:", training_args)
+    print("ColdNeuron Arguments:", coldneuron_args)
 
     os.environ["WANDB_WATCH"] = "false"
     os.environ["WANDB_LOG_MODEL "] = "false"
@@ -149,6 +152,10 @@ def main() -> None:
     set_seed(training_args.seed)
 
     trainer, model, dataset, _ = get_trainer(args=args)
+
+    if coldneuron_args.my_debug:
+        fix_linear_modules(model, model.config, 0.8)
+        return
 
     if training_args.do_train:
         # Log a few random samples from the training set:
