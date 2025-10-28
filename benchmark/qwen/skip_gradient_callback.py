@@ -38,6 +38,7 @@ class SkipGradientCallback(TrainerCallback):
                 #options for random mode
                 random_hot_k_percent=0.2,
                 change_random_every_iters=100,
+                ignore_layers = ['classifier']
                 ):
             self.model = model
             self.epoch_start_track = epoch_start_track
@@ -47,7 +48,7 @@ class SkipGradientCallback(TrainerCallback):
             self.output_dir = output_dir
             self.use_cold_every_iters = use_cold_every_iters
 
-
+            self.ignore_layers = ignore_layers
             self.mode = mode
             self.random_hot_k_percent = random_hot_k_percent
             self.change_random_every_iters = change_random_every_iters
@@ -69,13 +70,20 @@ class SkipGradientCallback(TrainerCallback):
             out_path = os.path.join(self.output_dir, f"neuron_masks{appendage}.pt")
             torch.save(cpu_masks, out_path)
             print(f"[skipgradient] saved neuron masks to {out_path}")
-        
+    
+    def layer_in_ignore_list(self, layer_name):
+        for ignore_layer in self.ignore_layers:
+            if ignore_layer in layer_name:
+                return True
+        return False
+    
     def _get_random_neuron_masks(self):
         """Build boolean row masks per parameter using random selection."""
         param_refs = []  # (name, rows)
         total_rows = 0
         for name, p in self.model.named_parameters():
-            if p.ndim < 2 or 'model' not in name:
+            #print(f"considering param {name} with shape {p.shape}")
+            if p.ndim < 2 or self.layer_in_ignore_list(name):
                 continue
             rows = p.shape[0]
             param_refs.append((name, rows))

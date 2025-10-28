@@ -39,6 +39,10 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --logging_dir $LOGGING_PATH \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
+    --skip_ratio 0.1 \
+    --fp16 \
+    --change_iters 100 \
+    --use_masked_skipgradient \
     --fp16 \
     --gradient_checkpointing \
     --max_steps 5 \
