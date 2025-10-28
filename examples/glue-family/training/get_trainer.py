@@ -22,6 +22,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../benchmark/qwen/")))
 from custom_adam import MaskedAdamW
 from skip_gradient_callback import SkipGradientCallback
+from probe2 import VramBreakdownCallback
 # from transformers.adapters.configuration import AdapterConfig, PfeifferConfig
 # from transformers.adapters.training import setup_adapter_training
 
@@ -385,6 +386,7 @@ def get_trainer(args):
     else:
         early_stopping_callback = []
 
+
     logger.info(summary(model, depth=5))
     if coldneuron_args.use_masked_skipgradient:
         print("***** using masked skipgradient *****")
@@ -429,6 +431,10 @@ def get_trainer(args):
             callbacks=early_stopping_callback,
         )
         trainer.create_optimizer()
+
+    vram_breakdown_callback = VramBreakdownCallback()
+    trainer.add_callback(vram_breakdown_callback)
+    
     opt = trainer.optimizer
     for i, g in enumerate(opt.param_groups):
         print(f"Group {i}:")

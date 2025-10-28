@@ -23,7 +23,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --learning_rate 2e-5 \
     --num_train_epochs 5 \
     --logging_strategy steps \
-    --logging_steps 100 \
+    --logging_steps 1 \
     --save_strategy steps \
     --save_steps 500 \
     --save_total_limit 3 \
