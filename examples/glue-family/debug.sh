@@ -3,7 +3,7 @@ TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
 
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/$RUN_NAME/$TASK/$MODEL_NAME/debug
+OUTPUT_PATH=/share/desa/nfs02/cold/jamal-runs-benckmarking/$RUN_NAME/$TASK/$MODEL_NAME/debug
 
 
 CUDA_VISIBLE_DEVICES=0 python main.py \
@@ -32,12 +32,15 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
     --logging_dir $OUTPUT_PATH/logs \
-    --fp16 \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
-    --my_debug \
-    --skip_ratio 0.8 \
-
-
-    
+    --skip_ratio 0.0 \
+    --fp16 \
+    --change_iters 0 \
+    --use_masked_skipgradient 
+    #--use_masked_skipgradient \
+    #--change_iters 0 \
+    #--fp16 \
+    #/share/desa/nfs02/cold/jamal-runs-benckmarking
+    #--my_debug
  

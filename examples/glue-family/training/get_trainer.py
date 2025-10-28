@@ -18,6 +18,10 @@ from transformers import (
     EarlyStoppingCallback,
     Trainer,
 )
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../benchmark/qwen/")))
+from custom_adam import MaskedAdamW
+from skip_gradient_callback import SkipGradientCallback
 # from transformers.adapters.configuration import AdapterConfig, PfeifferConfig
 # from transformers.adapters.training import setup_adapter_training
 
@@ -53,7 +57,7 @@ def get_trainer(args):
     # elif data_args.dataset_name == "humset":
     #     dataset = HumsetDataset(tokenizer, data_args, training_args)
     logger.info(dataset.train_dataset if training_args.do_train else None, dataset.eval_dataset if training_args.do_train else None, dataset.test_dataset if training_args.do_eval else None)
-
+    print("IS MULTIPLE CHOICE: ",dataset.multiple_choice)
     if not dataset.is_regression and not dataset.multiple_choice:
         config = AutoConfig.from_pretrained(
             model_args.config_name
@@ -382,17 +386,55 @@ def get_trainer(args):
         early_stopping_callback = []
 
     logger.info(summary(model, depth=5))
-
-    trainer = trainer_cls(
-        model=model,
-        args=training_args,
-        train_dataset=dataset.train_dataset if training_args.do_train else None,
-        eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
-        compute_metrics=dataset.compute_metrics,
-        tokenizer=tokenizer,
-        data_collator=dataset.data_collator,
-        callbacks=early_stopping_callback,
-    )
+    if coldneuron_args.use_masked_skipgradient:
+        print("***** using masked skipgradient *****")
+        opt_kwargs = {
+            "mask_dict": {},
+            "named_parameters": dict(model.named_parameters()),
+            "freeze_state": "none",  # or "decay" or "full" per your preference
+            "lr": training_args.learning_rate,
+            "fused": True,
+        }
+        skipgradient_cb = SkipGradientCallback(
+            model=model,
+            zero_mode="neurons",
+            use_cold_every_iters=20,
+            output_dir=training_args.output_dir,
+            mode="random",
+            random_hot_k_percent=1-coldneuron_args.skip_ratio,
+            change_random_every_iters=coldneuron_args.change_iters,
+        )
+        trainer = trainer_cls(
+            model=model,
+            args=training_args,
+            train_dataset=dataset.train_dataset if training_args.do_train else None,
+            eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
+            compute_metrics=dataset.compute_metrics,
+            tokenizer=tokenizer,
+            data_collator=dataset.data_collator,
+            callbacks=early_stopping_callback,
+            optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
+        )
+        trainer.create_optimizer()
+        trainer.add_callback(skipgradient_cb)
+    else:
+        trainer = trainer_cls(
+            model=model,
+            args=training_args,
+            train_dataset=dataset.train_dataset if training_args.do_train else None,
+            eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
+            compute_metrics=dataset.compute_metrics,
+            tokenizer=tokenizer,
+            data_collator=dataset.data_collator,
+            callbacks=early_stopping_callback,
+        )
+        trainer.create_optimizer()
+    opt = trainer.optimizer
+    for i, g in enumerate(opt.param_groups):
+        print(f"Group {i}:")
+        for k, v in g.items():
+            if k != "params":
+                print(f"  {k}: {v}")
 
     # return trainer, model, dataset, adapter_setup
     return trainer, model, dataset, None
