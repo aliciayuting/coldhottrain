@@ -1,0 +1,200 @@
+W1022 14:41:57.246000 1497341 site-packages/torch/distributed/run.py:803] 
+W1022 14:41:57.246000 1497341 site-packages/torch/distributed/run.py:803] *****************************************
+W1022 14:41:57.246000 1497341 site-packages/torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1022 14:41:57.246000 1497341 site-packages/torch/distributed/run.py:803] *****************************************
+[W1022 14:42:04.101386067 Utils.hpp:166] Warning: Environment variable NCCL_BLOCKING_WAIT is deprecated; use TORCH_NCCL_BLOCKING_WAIT instead (function operator())
+[W1022 14:42:04.101401252 Utils.hpp:137] Warning: Environment variable NCCL_ASYNC_ERROR_HANDLING is deprecated; use TORCH_NCCL_ASYNC_ERROR_HANDLING instead (function operator())
+[W1022 14:42:04.109239550 Utils.hpp:166] Warning: Environment variable NCCL_BLOCKING_WAIT is deprecated; use TORCH_NCCL_BLOCKING_WAIT instead (function operator())
+[W1022 14:42:04.109251890 Utils.hpp:137] Warning: Environment variable NCCL_ASYNC_ERROR_HANDLING is deprecated; use TORCH_NCCL_ASYNC_ERROR_HANDLING instead (function operator())
+[W1022 14:42:04.110251620 Utils.hpp:166] Warning: Environment variable NCCL_BLOCKING_WAIT is deprecated; use TORCH_NCCL_BLOCKING_WAIT instead (function operator())
+[W1022 14:42:04.110263774 Utils.hpp:137] Warning: Environment variable NCCL_ASYNC_ERROR_HANDLING is deprecated; use TORCH_NCCL_ASYNC_ERROR_HANDLING instead (function operator())
+[W1022 14:42:04.121112091 Utils.hpp:166] Warning: Environment variable NCCL_BLOCKING_WAIT is deprecated; use TORCH_NCCL_BLOCKING_WAIT instead (function operator())
+[W1022 14:42:04.121138048 Utils.hpp:137] Warning: Environment variable NCCL_ASYNC_ERROR_HANDLING is deprecated; use TORCH_NCCL_ASYNC_ERROR_HANDLING instead (function operator())
+[Gloo] Rank 1 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Rank 1] Backend=nccl World=4 LocalRank=1
+[Gloo] Rank 0 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Rank 0] Backend=nccl World=4 LocalRank=0
+[Gloo] Rank 3 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Rank 3] Backend=nccl World=4 LocalRank=3
+[Gloo] Rank 2 is connected to 3 peer ranks. Expected number of connected peer ranks is : 3
+[Rank 2] Backend=nccl World=4 LocalRank=2
+klara:1497361:1497361 [1] NCCL INFO cudaDriverVersion 12080
+klara:1497363:1497363 [3] NCCL INFO cudaDriverVersion 12080
+klara:1497362:1497362 [2] NCCL INFO cudaDriverVersion 12080
+klara:1497362:1497362 [2] NCCL INFO NCCL version 2.27.5+cuda12.9
+klara:1497363:1497363 [3] NCCL INFO NCCL version 2.27.5+cuda12.9
+klara:1497361:1497361 [1] NCCL INFO NCCL version 2.27.5+cuda12.9
+klara:1497360:1497360 [0] NCCL INFO cudaDriverVersion 12080
+klara:1497360:1497360 [0] NCCL INFO NCCL version 2.27.5+cuda12.9
+klara:1497361:1497392 [1] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+klara:1497363:1497390 [3] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+klara:1497360:1497393 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+klara:1497361:1497392 [1] NCCL INFO dlvsym failed on mlx5dv_get_data_direct_sysfs_path - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_get_data_direct_sysfs_path, version MLX5_1.25 version MLX5_1.25
+klara:1497361:1497392 [1] NCCL INFO dlvsym failed on mlx5dv_reg_dmabuf_mr - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_reg_dmabuf_mr, version MLX5_1.25 version MLX5_1.25
+klara:1497363:1497390 [3] NCCL INFO dlvsym failed on mlx5dv_get_data_direct_sysfs_path - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_get_data_direct_sysfs_path, version MLX5_1.25 version MLX5_1.25
+klara:1497362:1497391 [2] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+klara:1497363:1497390 [3] NCCL INFO dlvsym failed on mlx5dv_reg_dmabuf_mr - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_reg_dmabuf_mr, version MLX5_1.25 version MLX5_1.25
+klara:1497360:1497393 [0] NCCL INFO dlvsym failed on mlx5dv_get_data_direct_sysfs_path - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_get_data_direct_sysfs_path, version MLX5_1.25 version MLX5_1.25
+klara:1497362:1497391 [2] NCCL INFO dlvsym failed on mlx5dv_get_data_direct_sysfs_path - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_get_data_direct_sysfs_path, version MLX5_1.25 version MLX5_1.25
+klara:1497360:1497393 [0] NCCL INFO dlvsym failed on mlx5dv_reg_dmabuf_mr - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_reg_dmabuf_mr, version MLX5_1.25 version MLX5_1.25
+klara:1497362:1497391 [2] NCCL INFO dlvsym failed on mlx5dv_reg_dmabuf_mr - /lib/x86_64-linux-gnu/libmlx5.so: undefined symbol: mlx5dv_reg_dmabuf_mr, version MLX5_1.25 version MLX5_1.25
+klara:1497361:1497392 [1] NCCL INFO NET/IB : No device found.
+klara:1497363:1497390 [3] NCCL INFO NET/IB : No device found.
+klara:1497361:1497392 [1] NCCL INFO NET/IB : Using [RO]; OOB enp134s0f0:128.84.97.166<0>
+klara:1497363:1497390 [3] NCCL INFO NET/IB : Using [RO]; OOB enp134s0f0:128.84.97.166<0>
+klara:1497363:1497390 [3] NCCL INFO NET/Socket : Using [0]enp134s0f0:128.84.97.166<0>
+klara:1497361:1497392 [1] NCCL INFO NET/Socket : Using [0]enp134s0f0:128.84.97.166<0>
+klara:1497361:1497392 [1] NCCL INFO Initialized NET plugin Socket
+klara:1497361:1497392 [1] NCCL INFO Assigned NET plugin Socket to comm
+klara:1497363:1497390 [3] NCCL INFO Initialized NET plugin Socket
+klara:1497361:1497392 [1] NCCL INFO Using network Socket
+klara:1497363:1497390 [3] NCCL INFO Assigned NET plugin Socket to comm
+klara:1497363:1497390 [3] NCCL INFO Using network Socket
+klara:1497363:1497390 [3] NCCL INFO ncclCommInitRankConfig comm 0x2d99d970 rank 3 nranks 4 cudaDev 3 nvmlDev 3 busId 41000 commId 0xa97e82b44fec20f - Init START
+klara:1497362:1497391 [2] NCCL INFO NET/IB : No device found.
+klara:1497362:1497391 [2] NCCL INFO NET/IB : Using [RO]; OOB enp134s0f0:128.84.97.166<0>
+klara:1497360:1497393 [0] NCCL INFO NET/IB : No device found.
+klara:1497360:1497393 [0] NCCL INFO NET/IB : Using [RO]; OOB enp134s0f0:128.84.97.166<0>
+klara:1497360:1497393 [0] NCCL INFO NET/Socket : Using [0]enp134s0f0:128.84.97.166<0>
+klara:1497362:1497391 [2] NCCL INFO NET/Socket : Using [0]enp134s0f0:128.84.97.166<0>
+klara:1497362:1497391 [2] NCCL INFO Initialized NET plugin Socket
+klara:1497362:1497391 [2] NCCL INFO Assigned NET plugin Socket to comm
+klara:1497362:1497391 [2] NCCL INFO Using network Socket
+klara:1497360:1497393 [0] NCCL INFO Initialized NET plugin Socket
+klara:1497360:1497393 [0] NCCL INFO Assigned NET plugin Socket to comm
+klara:1497360:1497393 [0] NCCL INFO Using network Socket
+klara:1497362:1497391 [2] NCCL INFO ncclCommInitRankConfig comm 0x25b129f0 rank 2 nranks 4 cudaDev 2 nvmlDev 2 busId 3e000 commId 0xa97e82b44fec20f - Init START
+klara:1497361:1497392 [1] NCCL INFO ncclCommInitRankConfig comm 0x28908b20 rank 1 nranks 4 cudaDev 1 nvmlDev 1 busId 3d000 commId 0xa97e82b44fec20f - Init START
+klara:1497360:1497393 [0] NCCL INFO ncclCommInitRankConfig comm 0x3d747f40 rank 0 nranks 4 cudaDev 0 nvmlDev 0 busId 1e000 commId 0xa97e82b44fec20f - Init START
+
+[2025-10-22 14:42:05] klara:1497363:1497390 [3] ras/client_support.cc:160 NCCL WARN Call to bind failed: Address already in use
+
+[2025-10-22 14:42:05] klara:1497362:1497391 [2] ras/client_support.cc:160 NCCL WARN Call to bind failed: Address already in use
+klara:1497362:1497391 [2] NCCL INFO RAS failed to establish a client listening socket at localhost:28028
+klara:1497363:1497390 [3] NCCL INFO RAS failed to establish a client listening socket at localhost:28028
+
+[2025-10-22 14:42:05] klara:1497361:1497392 [1] ras/client_support.cc:160 NCCL WARN Call to bind failed: Address already in use
+klara:1497361:1497392 [1] NCCL INFO RAS failed to establish a client listening socket at localhost:28028
+
+[2025-10-22 14:42:05] klara:1497360:1497393 [0] ras/client_support.cc:160 NCCL WARN Call to bind failed: Address already in use
+klara:1497360:1497393 [0] NCCL INFO RAS failed to establish a client listening socket at localhost:28028
+klara:1497361:1497392 [1] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'enp134s0f0'
+klara:1497363:1497390 [3] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'enp134s0f0'
+klara:1497360:1497393 [0] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'enp134s0f0'
+klara:1497362:1497391 [2] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'enp134s0f0'
+klara:1497363:1497390 [3] NCCL INFO Setting affinity for GPU 3 to 24
+klara:1497363:1497390 [3] NCCL INFO NVLS multicast support is not available on dev 3 (NVLS_NCHANNELS 0)
+klara:1497360:1497393 [0] NCCL INFO Setting affinity for GPU 0 to 24
+klara:1497360:1497393 [0] NCCL INFO NVLS multicast support is not available on dev 0 (NVLS_NCHANNELS 0)
+klara:1497362:1497391 [2] NCCL INFO Setting affinity for GPU 2 to 24
+klara:1497362:1497391 [2] NCCL INFO NVLS multicast support is not available on dev 2 (NVLS_NCHANNELS 0)
+klara:1497361:1497392 [1] NCCL INFO Setting affinity for GPU 1 to 24
+klara:1497361:1497392 [1] NCCL INFO NVLS multicast support is not available on dev 1 (NVLS_NCHANNELS 0)
+klara:1497361:1497392 [1] NCCL INFO comm 0x28908b20 rank 1 nRanks 4 nNodes 1 localRanks 4 localRank 1 MNNVL 0
+klara:1497362:1497391 [2] NCCL INFO comm 0x25b129f0 rank 2 nRanks 4 nNodes 1 localRanks 4 localRank 2 MNNVL 0
+klara:1497361:1497392 [1] NCCL INFO Trees [0] 2/-1/-1->1->0 [1] 2/-1/-1->1->0
+klara:1497360:1497393 [0] NCCL INFO comm 0x3d747f40 rank 0 nRanks 4 nNodes 1 localRanks 4 localRank 0 MNNVL 0
+klara:1497363:1497390 [3] NCCL INFO comm 0x2d99d970 rank 3 nRanks 4 nNodes 1 localRanks 4 localRank 3 MNNVL 0
+klara:1497360:1497393 [0] NCCL INFO Channel 00/02 : 0 1 2 3
+klara:1497362:1497391 [2] NCCL INFO Trees [0] 3/-1/-1->2->1 [1] 3/-1/-1->2->1
+klara:1497363:1497390 [3] NCCL INFO Trees [0] -1/-1/-1->3->2 [1] -1/-1/-1->3->2
+klara:1497361:1497392 [1] NCCL INFO P2P Chunksize set to 131072
+klara:1497360:1497393 [0] NCCL INFO Channel 01/02 : 0 1 2 3
+klara:1497362:1497391 [2] NCCL INFO P2P Chunksize set to 131072
+klara:1497360:1497393 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1
+klara:1497360:1497393 [0] NCCL INFO P2P Chunksize set to 131072
+klara:1497363:1497390 [3] NCCL INFO P2P Chunksize set to 131072
+klara:1497361:1497392 [1] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+klara:1497362:1497391 [2] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+klara:1497363:1497390 [3] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+klara:1497360:1497393 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+klara:1497360:1497393 [0] NCCL INFO Check P2P Type isAllDirectP2p 0 directMode 0
+klara:1497360:1497400 [0] NCCL INFO [Proxy Service] Device 0 CPU core 24
+klara:1497362:1497402 [2] NCCL INFO [Proxy Service] Device 2 CPU core 24
+klara:1497361:1497399 [1] NCCL INFO [Proxy Service] Device 1 CPU core 24
+klara:1497363:1497401 [3] NCCL INFO [Proxy Service] Device 3 CPU core 24
+klara:1497363:1497405 [3] NCCL INFO [Proxy Service UDS] Device 3 CPU core 24
+klara:1497360:1497406 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 24
+klara:1497362:1497403 [2] NCCL INFO [Proxy Service UDS] Device 2 CPU core 24
+klara:1497361:1497404 [1] NCCL INFO [Proxy Service UDS] Device 1 CPU core 24
+klara:1497362:1497391 [2] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+klara:1497362:1497391 [2] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+klara:1497360:1497393 [0] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+klara:1497361:1497392 [1] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+klara:1497361:1497392 [1] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+klara:1497360:1497393 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+klara:1497360:1497393 [0] NCCL INFO CC Off, workFifoBytes 1048576
+klara:1497363:1497390 [3] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+klara:1497363:1497390 [3] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+klara:1497361:1497392 [1] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+klara:1497361:1497392 [1] NCCL INFO ncclCommInitRankConfig comm 0x28908b20 rank 1 nranks 4 cudaDev 1 nvmlDev 1 busId 3d000 commId 0xa97e82b44fec20f - Init COMPLETE
+klara:1497361:1497392 [1] NCCL INFO Init timings - ncclCommInitRankConfig: rank 1 nranks 4 total 0.91 (kernels 0.76, alloc 0.03, bootstrap 0.01, allgathers 0.02, topo 0.07, graphs 0.01, connections 0.01, rest 0.01)
+klara:1497363:1497390 [3] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+klara:1497363:1497390 [3] NCCL INFO ncclCommInitRankConfig comm 0x2d99d970 rank 3 nranks 4 cudaDev 3 nvmlDev 3 busId 41000 commId 0xa97e82b44fec20f - Init COMPLETE
+klara:1497363:1497390 [3] NCCL INFO Init timings - ncclCommInitRankConfig: rank 3 nranks 4 total 0.92 (kernels 0.76, alloc 0.02, bootstrap 0.01, allgathers 0.03, topo 0.07, graphs 0.01, connections 0.01, rest 0.01)
+klara:1497363:1497401 [3] NCCL INFO New proxy recv connection 0 from local rank 3, transport 0
+klara:1497360:1497393 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+klara:1497360:1497393 [0] NCCL INFO ncclCommInitRankConfig comm 0x3d747f40 rank 0 nranks 4 cudaDev 0 nvmlDev 0 busId 1e000 commId 0xa97e82b44fec20f - Init COMPLETE
+klara:1497360:1497393 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 0 nranks 4 total 0.92 (kernels 0.76, alloc 0.02, bootstrap 0.01, allgathers 0.03, topo 0.07, graphs 0.01, connections 0.01, rest 0.02)
+klara:1497363:1497407 [3] NCCL INFO Connected to proxy localRank 3 -> connection 0x77e530004f40
+klara:1497361:1497399 [1] NCCL INFO New proxy recv connection 0 from local rank 1, transport 1
+klara:1497363:1497401 [3] NCCL INFO New proxy recv connection 1 from local rank 3, transport 0
+klara:1497363:1497407 [3] NCCL INFO Connected to proxy localRank 3 -> connection 0x77e530004fb8
+klara:1497362:1497391 [2] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+klara:1497362:1497391 [2] NCCL INFO ncclCommInitRankConfig comm 0x25b129f0 rank 2 nranks 4 cudaDev 2 nvmlDev 2 busId 3e000 commId 0xa97e82b44fec20f - Init COMPLETE
+klara:1497362:1497391 [2] NCCL INFO Init timings - ncclCommInitRankConfig: rank 2 nranks 4 total 0.93 (kernels 0.77, alloc 0.02, bootstrap 0.01, allgathers 0.02, topo 0.07, graphs 0.01, connections 0.00, rest 0.03)
+klara:1497360:1497400 [0] NCCL INFO New proxy recv connection 0 from local rank 0, transport 1
+klara:1497361:1497408 [1] NCCL INFO Connected to proxy localRank 1 -> connection 0x725f90004f40
+klara:1497360:1497409 [0] NCCL INFO Connected to proxy localRank 0 -> connection 0x7a3514004f40
+klara:1497363:1497401 [3] NCCL INFO New proxy send connection 2 from local rank 3, transport 1
+klara:1497363:1497407 [3] NCCL INFO Connected to proxy localRank 3 -> connection 0x77e530005030
+klara:1497362:1497402 [2] NCCL INFO New proxy recv connection 0 from local rank 2, transport 0
+klara:1497362:1497410 [2] NCCL INFO Connected to proxy localRank 2 -> connection 0x775594004f40
+klara:1497362:1497402 [2] NCCL INFO New proxy recv connection 1 from local rank 2, transport 0
+klara:1497362:1497410 [2] NCCL INFO Connected to proxy localRank 2 -> connection 0x775594004fb8
+klara:1497362:1497410 [2] NCCL INFO Channel 00/0 : 2[2] -> 3[3] via P2P/CUMEM
+klara:1497362:1497402 [2] NCCL INFO New proxy send connection 2 from local rank 2, transport 0
+klara:1497362:1497410 [2] NCCL INFO Connected to proxy localRank 2 -> connection 0x775594005030
+klara:1497360:1497400 [0] NCCL INFO New proxy recv connection 1 from local rank 0, transport 1
+klara:1497360:1497409 [0] NCCL INFO Connected to proxy localRank 0 -> connection 0x7a3514004fb8
+klara:1497362:1497410 [2] NCCL INFO Channel 01/0 : 2[2] -> 3[3] via P2P/CUMEM
+klara:1497362:1497402 [2] NCCL INFO New proxy send connection 3 from local rank 2, transport 0
+klara:1497362:1497410 [2] NCCL INFO Connected to proxy localRank 2 -> connection 0x7755940050a8
+klara:1497363:1497407 [3] NCCL INFO Channel 00 : 3[3] -> 0[0] via SHM/direct/direct
+klara:1497363:1497401 [3] NCCL INFO New proxy send connection 3 from local rank 3, transport 1
+klara:1497361:1497399 [1] NCCL INFO New proxy recv connection 1 from local rank 1, transport 1
+klara:1497363:1497407 [3] NCCL INFO Connected to proxy localRank 3 -> connection 0x77e5300050a8
+klara:1497361:1497408 [1] NCCL INFO Connected to proxy localRank 1 -> connection 0x725f90004fb8
+klara:1497363:1497407 [3] NCCL INFO Channel 01 : 3[3] -> 0[0] via SHM/direct/direct
+klara:1497360:1497400 [0] NCCL INFO New proxy send connection 2 from local rank 0, transport 1
+klara:1497361:1497408 [1] NCCL INFO Channel 00/0 : 1[1] -> 2[2] via P2P/CUMEM
+klara:1497360:1497409 [0] NCCL INFO Connected to proxy localRank 0 -> connection 0x7a3514005030
+klara:1497360:1497409 [0] NCCL INFO Channel 00 : 0[0] -> 1[1] via SHM/direct/direct
+klara:1497361:1497399 [1] NCCL INFO New proxy send connection 2 from local rank 1, transport 0
+klara:1497361:1497408 [1] NCCL INFO Connected to proxy localRank 1 -> connection 0x725f90005030
+klara:1497360:1497400 [0] NCCL INFO New proxy send connection 3 from local rank 0, transport 1
+klara:1497360:1497409 [0] NCCL INFO Connected to proxy localRank 0 -> connection 0x7a35140050a8
+klara:1497360:1497409 [0] NCCL INFO Channel 01 : 0[0] -> 1[1] via SHM/direct/direct
+klara:1497361:1497408 [1] NCCL INFO Channel 01/0 : 1[1] -> 2[2] via P2P/CUMEM
+klara:1497361:1497399 [1] NCCL INFO New proxy send connection 3 from local rank 1, transport 0
+klara:1497361:1497408 [1] NCCL INFO Connected to proxy localRank 1 -> connection 0x725f900050a8
+klara:1497360:1497400 [0] NCCL INFO New proxy send connection 4 from local rank 3, transport 0
+klara:1497362:1497402 [2] NCCL INFO New proxy send connection 4 from local rank 1, transport 0
+klara:1497363:1497407 [3] NCCL INFO Connected to proxy localRank 0 -> connection 0x7a3514005120
+klara:1497361:1497408 [1] NCCL INFO Connected to proxy localRank 2 -> connection 0x775594005120
+klara:1497363:1497401 [3] NCCL INFO New proxy send connection 4 from local rank 2, transport 0
+klara:1497362:1497410 [2] NCCL INFO Connected to proxy localRank 3 -> connection 0x77e530005120
+klara:1497361:1497399 [1] NCCL INFO New proxy send connection 4 from local rank 0, transport 0
+klara:1497360:1497409 [0] NCCL INFO Connected to proxy localRank 1 -> connection 0x725f90005120
+klara:1497362:1497402 [2] NCCL INFO New proxy send connection 5 from local rank 3, transport 0
+klara:1497363:1497407 [3] NCCL INFO Connected to proxy localRank 2 -> connection 0x775594005198
+klara:1497360:1497400 [0] NCCL INFO New proxy send connection 5 from local rank 1, transport 0
+klara:1497361:1497408 [1] NCCL INFO Connected to proxy localRank 0 -> connection 0x7a3514005198
+klara:1497361:1497399 [1] NCCL INFO New proxy send connection 5 from local rank 2, transport 0
+klara:1497362:1497410 [2] NCCL INFO Connected to proxy localRank 1 -> connection 0x725f90005198
+klara:1497363:1497401 [3] NCCL INFO New proxy send connection 5 from local rank 0, transport 0
+klara:1497360:1497409 [0] NCCL INFO Connected to proxy localRank 3 -> connection 0x77e530005198
+klara:1497361:1497408 [1] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
+klara:1497362:1497410 [2] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
+klara:1497363:1497407 [3] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
+klara:1497360:1497409 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
