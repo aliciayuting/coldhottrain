@@ -2,7 +2,7 @@
 *.tar
 *.tar.*
 *.zip
-
+.venv
 # Ignore dataset for vector database
 **/gist/
 **/miniset/
@@ -44,3 +44,7 @@ build-*
 
 
 analyze
+
+**/output
+
+*slurm*
