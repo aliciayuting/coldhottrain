@@ -14,6 +14,8 @@ from transformers import (
 
 from model.custom_module import LinearColWise
 
+from peft import LoraConfig, get_peft_model, TaskType as PeftTaskType
+
 class TaskType(Enum):
     TOKEN_CLASSIFICATION = (1,)
     SEQUENCE_CLASSIFICATION = (2,)
@@ -26,6 +28,13 @@ AUTO_MODELS = {
     TaskType.SEQUENCE_CLASSIFICATION: AutoModelForSequenceClassification,
     TaskType.QUESTION_ANSWERING: AutoModelForQuestionAnswering,
     TaskType.MULTIPLE_CHOICE: AutoModelForMultipleChoice,
+}
+
+AUTO_PEFT_TASKS = {
+    TaskType.TOKEN_CLASSIFICATION: PeftTaskType.TOKEN_CLS,
+    TaskType.SEQUENCE_CLASSIFICATION: PeftTaskType.SEQ_CLS,
+    TaskType.QUESTION_ANSWERING: PeftTaskType.QUESTION_ANS,
+    TaskType.MULTIPLE_CHOICE: PeftTaskType.SEQ_CLS,
 }
 
 
@@ -71,25 +80,39 @@ def get_model(
             ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
         )
 
+    if coldneuron_args.use_lora:
+        assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
+        print("***** Using LoRA finetuning *****")
+        peft_config = LoraConfig(
+            task_type=AUTO_PEFT_TASKS[task_type],
+            target_modules=["query", "value"], # TODO: make it configurable and generalizable for all models
+            modules_to_save=["classifier"],
+            r=coldneuron_args.lora_rank,
+            lora_alpha=coldneuron_args.lora_scaling_factor,
+            lora_dropout=0.05,
+        )
+        model = get_peft_model(model, peft_config)
+
     bert_param = 0
-    if fix_bert:
-        if config.model_type == "bert":
-            for param in model.bert.parameters():
-                param.requires_grad = False
-            for _, param in model.bert.named_parameters():
-                bert_param += param.numel()
-        elif config.model_type == "roberta":
-            for param in model.roberta.parameters():
-                param.requires_grad = False
-            for _, param in model.roberta.named_parameters():
-                bert_param += param.numel()
-        elif config.model_type == "deberta":
-            for param in model.deberta.parameters():
-                param.requires_grad = False
-            for _, param in model.deberta.named_parameters():
-                bert_param += param.numel()
+    # if fix_bert:
+    #     if config.model_type == "bert":
+    #         for param in model.bert.parameters():
+    #             param.requires_grad = False
+    #         for _, param in model.bert.named_parameters():
+    #             bert_param += param.numel()
+    #     elif config.model_type == "roberta":
+    #         for param in model.roberta.parameters():
+    #             param.requires_grad = False
+    #         for _, param in model.roberta.named_parameters():
+    #             bert_param += param.numel()
+    #     elif config.model_type == "deberta":
+    #         for param in model.deberta.parameters():
+    #             param.requires_grad = False
+    #         for _, param in model.deberta.named_parameters():
+    #             bert_param += param.numel()
     all_param = 0
-    for _, param in model.named_parameters():
+    for name, param in model.named_parameters():
+        print(f"Param: {name}, Numel: {param.numel()}, Requires grad: {param.requires_grad}")
         all_param += param.numel()
     total_param = all_param - bert_param
     print("***** total param is {} *****".format(total_param))

@@ -48,6 +48,11 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     # --my_debug True \
     # --use_masked_skipgradient \
     # --change_iters $CHANGE_ITERS \
+
+    # --use_lora \
+    # --lora_rank 32 \
+    # --lora_scaling_factor 64 \
+    # --lora_attn_matrices q_proj v_proj \
     
     
 
