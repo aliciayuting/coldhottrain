@@ -152,7 +152,9 @@ def main() -> None:
     set_seed(training_args.seed)
 
     trainer, model, dataset, _ = get_trainer(args=args)
-
+    for m in model.modules():
+        print(type(m), m)
+    exit(0)
     if coldneuron_args.my_debug:
         print("***** Debug Mode Activated *****")
         fix_linear_modules(model, model.config, 0.8)

@@ -34,9 +34,9 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --logging_dir $OUTPUT_PATH/logs \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
-    --skip_ratio 0.0 \
+    --skip_ratio 0.1 \
     --fp16 \
-    --change_iters 0 \
+    --change_iters 100 \
     --use_masked_skipgradient 
     #--use_masked_skipgradient \
     #--change_iters 0 \

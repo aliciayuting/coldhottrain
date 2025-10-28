@@ -398,7 +398,6 @@ def get_trainer(args):
         skipgradient_cb = SkipGradientCallback(
             model=model,
             zero_mode="neurons",
-            use_cold_every_iters=20,
             output_dir=training_args.output_dir,
             mode="random",
             random_hot_k_percent=1-coldneuron_args.skip_ratio,
