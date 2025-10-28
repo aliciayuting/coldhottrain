@@ -235,7 +235,7 @@ class SkipGradientCallback(TrainerCallback):
                 self._apply_fixed_masks()
                 
     def on_pre_optimizer_step_random(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        if (self.change_random_every_iters > 0 and state.global_step % self.change_random_every_iters == 0) or (not self.neuron_masks):
+        if (self.change_random_every_iters > 0 and state.global_step % self.change_random_every_iters == 0) or (not self.neuron_masks and self.change_random_every_iters > 0):
             if _is_main():
                 print(f"[skipgradient][on_pre_optimizer_step_random] global_step={state.global_step} generating new random masks")
                 self.neuron_masks = self._get_random_neuron_masks()

@@ -27,7 +27,6 @@ logging.basicConfig(
 
 torch.manual_seed(43)
 
-SCRATCH = "/mydata"
 MODEL = os.getenv("MODEL", "Qwen/Qwen2.5-0.5B")
 #MODEL = "Qwen/Qwen2.5-1.5B"
 
@@ -56,7 +55,7 @@ IS_GSM8K = DATASET == "gsm8k"
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
-SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
+SCRATCH = os.getenv("SCRATCH", "/share/desa/nfs02/cold")
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
 ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
 FREEZE_AFTER_EPOCHS = 1       # Choose bottom-k once after this many epochs

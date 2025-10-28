@@ -16,7 +16,8 @@ logging.basicConfig(
         format="[%(levelname)s] %(message)s"
     )
 
-MODEL = "Qwen/Qwen2.5-0.5B"
+#MODEL = "Qwen/Qwen2.5-0.5B"
+MODEL="roberta-base"
 
 
 # DATASET = "sst2"
@@ -29,12 +30,12 @@ DATASET = "mnli"
 VALIDATION_SET = "validation_matched"
 #VALIDATION_SET = "validation_mismatched"
 NUM_LABELS = 3
-EVAL_LOSS_STEPS=25
-NUM_EPOCHS=1
+EVAL_LOSS_STEPS=500
+NUM_EPOCHS=5
 
-RUN_NAME = "random-20p"
+RUN_NAME = "basetest"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
-SCRATCH = os.getenv("SCRATCH", "/pscratch/sd/l/lsx")
+SCRATCH = os.getenv("SCRATCH", "/share/desa/nfs02/cold/jamal-runs-benckmarking")
 
 ZERO_BOTTOM_K_PERCENT = 0.5   # Zero bottom 50% of gradients
 ZERO_MODE = "neurons"         # Options: "weights" or "neurons"
@@ -43,31 +44,31 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 0.2
+RANDOM_HOT_K_PERCENT = 1.0    
 CHANGE_RANDOM_EVERY_ITERS = 0
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
-output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
+output_dir = f"{SCRATCH}/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
 
 weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
 args = TrainingArguments(
     output_dir=f"{output_dir}/ckpt",
     logging_dir=f"{output_dir}/logs",
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,
-    gradient_accumulation_steps=2,
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    gradient_accumulation_steps=1,
     gradient_checkpointing=True,
     # gradient_accumulation_steps=1,
     num_train_epochs=NUM_EPOCHS,
     learning_rate=2e-5,
-    # fp16=True,
-    bf16=True,
-    logging_steps=10,
+    fp16=True,
+    #bf16=True,
+    logging_steps=100,
     save_strategy="epoch",
     eval_strategy="steps",
     eval_steps=EVAL_LOSS_STEPS,
-    weight_decay=0.01,
+    #weight_decay=0.01,
     #save_steps=100,
     # save_total_limit=2,
     ddp_find_unused_parameters=False,
@@ -99,7 +100,6 @@ if tok.pad_token is None:
     
 model = AutoModelForSequenceClassification.from_pretrained(
     MODEL,
-    torch_dtype=torch.bfloat16,
     num_labels=NUM_LABELS
     # device_map="auto")
 )
@@ -118,24 +118,25 @@ def tokenize_function_sst(examples):
 #WILL NOT WORK WITH BATCHED!!!!!
 def tokenize_function_mnli(example):
     return tok(
-        f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
+        #f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
+        example["premise"], example["hypothesis"],
         padding="max_length",
         truncation=True,
-        max_length=512
+        max_length=128
     )
 
 with args.main_process_first(desc="tokenize"):
     if DATASET == "sst2":
         tokenized_ds = ds.map(tokenize_function_sst, batched=False)
     elif DATASET == "mnli":
-        tokenized_ds = ds.map(tokenize_function_mnli, batched=False)
+        tokenized_ds = ds.map(tokenize_function_mnli, batched=True)
     else:
         raise ValueError(f"Unsupported dataset: {DATASET}")
 
 
 print(tokenized_ds)
 # Data collator
-data_collator = DataCollatorWithPadding(tokenizer=tok)
+data_collator = DataCollatorWithPadding(tokenizer=tok, pad_to_multiple_of=8)
 
 accuracy_metric = evaluate.load("accuracy")
 
