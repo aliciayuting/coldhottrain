@@ -1,0 +1,22 @@
+{
+    "mnli_alpaca_train": {
+        "file_name": "/mnt/coldhot/shouxu_runs/datasets/mnli_alpaca/mnli_alpaca_train.jsonl",
+        "columns": {
+            "prompt": "instruction",
+            "query": "input",
+            "response": "output",
+            "system": "system",
+            "history": "history"
+        }
+    },
+    "mnli_alpaca_dev_matched": {
+        "file_name": "/mnt/coldhot/shouxu_runs/datasets/mnli_alpaca/mnli_alpaca_dev_matched.jsonl",
+        "columns": {
+            "prompt": "instruction",
+            "query": "input",
+            "response": "output",
+            "system": "system",
+            "history": "history"
+        }
+    }
+}

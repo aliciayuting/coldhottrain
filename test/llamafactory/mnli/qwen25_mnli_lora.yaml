@@ -1,0 +1,68 @@
+# qwen25_mnli_lora.yaml
+
+### model
+model_name_or_path: Qwen/Qwen2.5-0.5B
+
+
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 8
+lora_target: all
+
+
+
+
+
+### dataset
+dataset_dir: ./             # if dataset_info.json uses relative paths
+dataset: mnli_alpaca_train
+template: alpaca            # because our records are instruction/input/output
+cutoff_len: 2048
+max_samples: 5
+overwrite_cache: true
+preprocessing_num_workers: 16
+dataloader_num_workers: 4
+
+
+
+### Training
+output_dir: ./output/qwen25_mnli_lora
+per_device_train_batch_size: 16
+gradient_accumulation_steps: 2
+learning_rate: 2.0e-5
+num_train_epochs: 1
+logging_steps: 500
+save_steps: 500
+save_total_limit: 2
+bf16: true
+fp16: false
+optim: adamw_torch
+weight_decay: 0.01
+warmup_ratio: 0
+# lr_scheduler_type: cosine
+seed: 43
+save_strategy: "no"
+overwrite_output_dir: true
+resume_from_checkpoint: false 
+# max_steps: 5
+report_to: none # choices: [none, wandb, tensorboard, swanlab, mlflow]
+compute_accuracy: true
+
+
+
+
+
+
+### eval
+eval_dataset: mnli_alpaca_dev_matched
+eval_steps: 500
+eval_strategy: steps
+per_device_eval_batch_size: 1
+
+
+
+
+# FORCE_TORCHRUN=1 CUDA_VISIBLE_DEVICES=0,1 llamafactory-cli train config/config1.yaml
