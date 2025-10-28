@@ -1,16 +1,21 @@
-RUN_NAME=full-ft-2e-5
 TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
+SKIP_RATIO=0.8
+CHANGE_ITERS=1
 
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/$RUN_NAME/$TASK/$MODEL_NAME/$SEED
-
+# OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK/$MODEL_NAME/$SKIP_RATIO/$SEED
+OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK/
+# OUTPUT_PATH=$OUTPUT_BASE/$SKIP_RATIO/$SEED
+RUN_NAME=$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED
+# RUN_NAME=DEBUG
+LOGGING_PATH=$OUTPUT_PATH/runs/$RUN_NAME
 
 CUDA_VISIBLE_DEVICES=0 python main.py \
     --model-name roberta-base \
     --task-name $TASK \
-    --do-train False \
-    --do-eval False \
+    --do-train True \
+    --do-eval True \
     --max_seq_length 128 \
     --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 32 \
@@ -31,11 +36,21 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --seed $SEED \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
-    --logging_dir $OUTPUT_PATH/logs \
-    --fp16 \
+    --logging_dir $LOGGING_PATH \
     --overwrite_output_dir \
-    --ddp_find_unused_parameters False
-
-
+    --ddp_find_unused_parameters False \
+    --fp16 \
+    --gradient_checkpointing \
+    | tee ./logs/$RUN_NAME.txt
     
+    # --max_steps 5
+
+    # --use_masked_skipgradient \
+    # --skip_ratio $SKIP_RATIO \
+    # --change_iters $CHANGE_ITERS \
+    
+
+
+    #/share/desa/nfs02/cold/jamal-runs-benckmarking
+    #--my_debug
  

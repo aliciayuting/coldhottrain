@@ -157,8 +157,7 @@ def main() -> None:
     exit(0)
     if coldneuron_args.my_debug:
         print("***** Debug Mode Activated *****")
-        fix_linear_modules(model, model.config, 0.8)
-        #return
+        return
 
     if training_args.do_train:
         # Log a few random samples from the training set:
