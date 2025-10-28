@@ -2,7 +2,7 @@
 *.tar
 *.tar.*
 *.zip
-
+.venv
 # Ignore dataset for vector database
 **/gist/
 **/miniset/
@@ -38,6 +38,7 @@ build-*
 *inat/*
 *google-landmark/*
 
+.venv
 
 **/pycache
 
@@ -45,3 +46,5 @@ build-*
 analyze
 
 **/output
+
+*slurm*
