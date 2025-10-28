@@ -31,6 +31,21 @@ def parse_args():
     p.add_argument("--split", type=str, default="test", choices=["test", "auxiliary_train"])
     return p.parse_args()
 
+
+def check_letter_balance(dataset, split="test"):
+    ds = dataset[split]
+    gold = np.array(ds["answer"])
+    counts = np.bincount(gold, minlength=4)
+    totals = counts.sum()
+    dist = counts / totals
+    print(f"\nLetter balance in split='{split}'")
+    for i, p in enumerate(dist):
+        print(f"  {chr(65+i)}: {counts[i]:6d}  ({p*100:5.1f}%)")
+    # Simple imbalance score: max deviation from uniform
+    max_dev = np.abs(dist - 0.25).max()
+    print(f"  Max deviation from 25%: {max_dev*100:.2f}%")
+    return dist, counts
+
 def main():
     args = parse_args()
     
@@ -178,7 +193,7 @@ Answer:"""
         
         # Get probabilities
         probs = torch.softmax(choice_logits.to(torch.float32), dim=1).cpu().numpy()
-        
+
         # Get predictions
         pred_idx = choice_logits.argmax(dim=1).cpu().numpy()
         

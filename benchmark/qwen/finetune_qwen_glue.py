@@ -45,7 +45,7 @@ RANDOM_HOT_K_PERCENT = 0.2
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
-output_dir = f"{SCRATCH}/jamal_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
+output_dir = f"{SCRATCH}/alicia_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
 
 weight_out_dir = f"{output_dir}/weight_dump"
 # Training arguments
@@ -175,19 +175,19 @@ dump_out_dir = f"{output_dir}/grad_dump"
 
 
 
-skipgradient_cb = SkipGradientCallback(
-    model=model,
-    zero_bottom_k_percent=ZERO_BOTTOM_K_PERCENT,
-    zero_mode=ZERO_MODE,
-    epoch_start_track=FREEZE_AFTER_EPOCHS-1,   # start tracking gradient norms after this many epochs
-    epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
-    use_cold_every_iters=20,
-    output_dir=output_dir,
-    mode=MODE,
-    random_hot_k_percent=RANDOM_HOT_K_PERCENT,
-    change_random_every_iters=CHANGE_RANDOM_EVERY_ITERS,
-)
-trainer.add_callback(skipgradient_cb)
+# skipgradient_cb = SkipGradientCallback(
+#     model=model,
+#     zero_bottom_k_percent=ZERO_BOTTOM_K_PERCENT,
+#     zero_mode=ZERO_MODE,
+#     epoch_start_track=FREEZE_AFTER_EPOCHS-1,   # start tracking gradient norms after this many epochs
+#     epoch_compute_masks=FREEZE_AFTER_EPOCHS,  # compute & fix masks at this epoch
+#     use_cold_every_iters=20,
+#     output_dir=output_dir,
+#     mode=MODE,
+#     random_hot_k_percent=RANDOM_HOT_K_PERCENT,
+#     change_random_every_iters=CHANGE_RANDOM_EVERY_ITERS,
+# )
+# trainer.add_callback(skipgradient_cb)
 
 dump_cb = PerModuleGradDumper(
     out_dir=dump_out_dir,
