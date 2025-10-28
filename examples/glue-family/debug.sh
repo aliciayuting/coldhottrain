@@ -35,10 +35,13 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --logging_dir $OUTPUT_PATH/logs \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
-    --skip_ratio 0.8 \
-    --max_steps 5 \
+    --skip_ratio 0.0 \
     --fp16 \
-
-
-    
+    --change_iters 0 \
+    --use_masked_skipgradient 
+    #--use_masked_skipgradient \
+    #--change_iters 0 \
+    #--fp16 \
+    #/share/desa/nfs02/cold/jamal-runs-benckmarking
+    #--my_debug
  

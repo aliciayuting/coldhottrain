@@ -154,11 +154,9 @@ def main() -> None:
     trainer, model, dataset, _ = get_trainer(args=args)
 
     if coldneuron_args.my_debug:
-        return
-    
-    if coldneuron_args.skip_ratio > 0.0:
-        fix_linear_modules(model, model.config, coldneuron_args.skip_ratio)
-
+        print("***** Debug Mode Activated *****")
+        fix_linear_modules(model, model.config, 0.8)
+        #return
 
     if training_args.do_train:
         # Log a few random samples from the training set:
