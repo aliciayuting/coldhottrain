@@ -38,6 +38,7 @@ build-*
 *inat/*
 *google-landmark/*
 
+.venv
 
 **/pycache
 

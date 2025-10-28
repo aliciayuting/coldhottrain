@@ -1,0 +1,467 @@
+"""
+Implementation decisions:
+zero optimizer or skip optimizer step?
+"""
+
+
+from typing import Dict
+from transformers import TrainerCallback, PreTrainedModel, TrainerControl, TrainerState, TrainingArguments
+import torch.distributed as dist
+import torch
+import hashlib
+import os
+import logging
+
+from custom_adam import MaskedAdamW
+
+
+logger = logging.getLogger(__name__)
+
+def _is_main():
+    return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+
+#modes "default" | "random"
+#Q: would it be more efficient to calc the gradient mask on rank 0 and broadcast it to all ranks?
+#Q: should we freeze the biases?
+#TODO: don't mask out final layer!!!!
+class SkipGradientCallback(TrainerCallback):
+    def __init__(self,
+                model: PreTrainedModel,
+                zero_mode="neurons",
+                output_dir="",
+                mode = "default",
+                #options for default mode
+                epoch_start_track=1,
+                epoch_compute_masks=2,
+                zero_bottom_k_percent=0.1,
+                use_cold_every_iters=0, #Important that this number should be offset from the epoch size so the cold neurons get different training data every time
+                #options for random mode
+                random_hot_k_percent=0.2,
+                change_random_every_iters=100,
+                ):
+            self.model = model
+            self.epoch_start_track = epoch_start_track
+            self.epoch_compute_masks = epoch_compute_masks
+            self.zero_bottom_k_percent = zero_bottom_k_percent
+            self.zero_mode = zero_mode
+            self.output_dir = output_dir
+            self.use_cold_every_iters = use_cold_every_iters
+
+
+            self.mode = mode
+            self.random_hot_k_percent = random_hot_k_percent
+            self.change_random_every_iters = change_random_every_iters
+
+
+            self._has_computed_masks = False
+
+            self.is_tracking_grads = False
+            self.neuron_masks = {}
+            # storage for split computation path
+            self._neuron_scores = None         # List[Tensor] of per-param row L2 norms
+            self._neuron_param_refs = None     # List[Tuple[name, rows]] matching scores
+            self._total_neuron_rows = 0
+
+    def save_masks(self, appendage=""):
+        if self.output_dir and _is_main():
+            os.makedirs(self.output_dir, exist_ok=True)
+            cpu_masks = {k: v.detach().to("cpu", dtype=torch.bool) for k, v in self.neuron_masks.items()}
+            out_path = os.path.join(self.output_dir, f"neuron_masks{appendage}.pt")
+            torch.save(cpu_masks, out_path)
+            print(f"[skipgradient] saved neuron masks to {out_path}")
+        
+    def _get_random_neuron_masks(self):
+        """Build boolean row masks per parameter using random selection."""
+        param_refs = []  # (name, rows)
+        total_rows = 0
+        for name, p in self.model.named_parameters():
+            if p.ndim < 2 or 'model' not in name:
+                continue
+            rows = p.shape[0]
+            param_refs.append((name, rows))
+            total_rows += rows
+        self._total_neuron_rows = total_rows
+        k = int(total_rows * (1-self.random_hot_k_percent))
+        if k <= 0:
+            return {}
+
+        # Randomly select k unique row indices across all rows of all relevant params
+        all_indices = torch.randperm(total_rows)[:k].sort().values
+
+        # Build boolean row masks per param
+        masks = {}
+        offset = 0
+        for (name, rows) in param_refs:
+            this_slice = all_indices[(all_indices >= offset) & (all_indices < offset + rows)] - offset
+            if this_slice.numel() > 0:
+                row_mask = torch.zeros(rows, dtype=torch.bool, device=next(self.model.parameters()).device)
+                row_mask[this_slice] = True
+                masks[name] = row_mask
+            offset += rows
+        return masks
+
+    def _compute_masks(self):
+        if self._has_computed_masks:
+            return
+        
+        if _is_main():
+            print(f"Computing skip-gradient masks at epoch {self.epoch_compute_masks}...")
+        if self.zero_mode == "neurons":
+            self.neuron_masks = self._build_neuron_masks_from_scores()
+            # save masks to output_dir
+            self.save_masks()
+        else:
+            raise ValueError(f"Invalid zero_mode: {self.zero_mode}")
+        
+        self._has_computed_masks = True
+    #Q: do we want to mask out bias grads too?
+    @torch.no_grad()
+    def _apply_fixed_masks(self):
+        """Apply previously computed fixed masks to current gradients."""
+        if self.zero_mode == "neurons":
+            if not self.neuron_masks:
+                #raise RuntimeError("No neuron masks computed yet")
+                logger.debug("No neuron masks computed yet")
+                return
+            for name, p in self.model.named_parameters():
+                if p.grad is None or p.grad.ndim < 2:
+                    continue
+                row_mask = self.neuron_masks.get(name)
+                if row_mask is not None:
+                    # Zero out entire rows where row_mask is True
+                    p.grad[row_mask] = 0.0
+        else:
+            raise ValueError(f"Unknown zero_mode: {self.zero_mode}")
+        
+    @torch.no_grad()
+    def _collect_neuron_grad_norms(self):
+        """Compute and store per-row L2 gradient norms for all 2D+ parameters."""
+        scores = []
+        param_refs = []  # (name, rows)
+        #Q: can i assume named parameters is alwyas the same order? If it isnt this will break 
+        for name, p in self.model.named_parameters():
+            if p.grad is None or p.grad.ndim < 2:
+                continue
+            if p.grad.ndim > 2:
+                print(f"[CustomTrainer] param {name} has ndim={p.grad.ndim}")
+            g = p.grad.detach()
+            rows = g.shape[0]
+            flat = g.view(rows, -1)
+            l2 = (flat.pow(2).sum(dim=1)).float()  # [rows]
+            scores.append(l2)
+            param_refs.append((name, rows))
+        
+        if self._neuron_scores == None:
+            self._neuron_scores = scores
+            self._neuron_param_refs = param_refs
+            self._total_neuron_rows = int(sum(t.numel() for t in scores)) if scores else 0
+        #TODO: do this a smarter way. what if there is a neuron that is 0 90% of the time but huge 10% of the time? Probably want to still keep it as hot
+        else:
+            self._neuron_scores = [x + y for x, y in zip(scores, self._neuron_scores)]
+        #return scores, param_refs
+
+    @torch.no_grad()
+    def _build_neuron_masks_from_scores(self):
+        """Build boolean row masks per parameter using stored per-row gradient norms."""
+        scores = self._neuron_scores or []
+        param_refs = self._neuron_param_refs or []
+        if not scores:
+            return {}
+
+        all_scores = torch.cat(scores)
+        total_rows = all_scores.numel()
+        k = int(total_rows * self.zero_bottom_k_percent)
+        if k <= 0:
+            return {}
+
+        # Bottom-K indices across all rows of all relevant params (stable for ties)
+        order = torch.argsort(all_scores, stable=True)
+        bottom_idx = order[:k]
+
+        # Build boolean row masks per param
+        masks = {}
+        offset = 0
+        for (name, rows), l2 in zip(param_refs, scores):
+            this_slice = bottom_idx[(bottom_idx >= offset) & (bottom_idx < offset + rows)] - offset
+            if this_slice.numel() > 0:
+                row_mask = torch.zeros(rows, dtype=torch.bool, device=l2.device)
+                row_mask[this_slice] = True
+                masks[name] = row_mask
+            offset += rows
+        return masks
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if _is_main():
+            print(f"[skipgradient][on_train_begin] max_steps={state.max_steps} epochs={args.num_train_epochs}")
+
+    def on_epoch_begin_default(self, args, state, control, **kwargs):
+        if int(state.epoch) >= self.epoch_start_track and not self._has_computed_masks: # type: ignore
+            self.is_tracking_grads = True
+        if int(state.epoch) == self.epoch_compute_masks and not self._has_computed_masks: # type: ignore
+            self._compute_masks()
+            self._ddp_assert_neuron_masks_identical()
+            self.is_tracking_grads = False  # stop tracking after computing masks
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        if _is_main():
+            print(f"[skipgradient][on_epoch_begin] epoch_float={state.epoch}")
+        if self.mode == "default":
+            self.on_epoch_begin_default(args, state, control, **kwargs)
+        elif self.mode == "random":
+            pass
+
+    def on_train_batch_end(self, args, state, control, **kwargs):
+        if _is_main():
+            print(f"[skipgradient][on_train_batch_end] global_step={state.global_step}")
+    
+    def _unwrap_optimizer(self, opt):
+        # Walk through any wrappers until we hit the real torch optimizer
+        while hasattr(opt, "optimizer"):   # AcceleratedOptimizer has .optimizer
+            opt = opt.optimizer
+        return opt
+
+    def on_pre_optimizer_step_default(self, args, state, control, **kwargs):
+        if self.is_tracking_grads and not self._has_computed_masks:
+            self._collect_neuron_grad_norms()
+        elif self._has_computed_masks:
+            #print(f"[skipgradient][on_pre_optimizer_step] global_step={state.global_step} applying fixed masks")
+            #use the cold gradients every use_cold_every_iters steps
+            if self.use_cold_every_iters:
+                if state.global_step % self.use_cold_every_iters != 0:
+                    self._apply_fixed_masks()
+                else:
+                    print("updating cold params")
+            else:
+                self._apply_fixed_masks()
+                
+    def on_pre_optimizer_step_random(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        if (self.change_random_every_iters > 0 and state.global_step % self.change_random_every_iters == 0) or (not self.neuron_masks):
+            if _is_main():
+                print(f"[skipgradient][on_pre_optimizer_step_random] global_step={state.global_step} generating new random masks")
+                self.neuron_masks = self._get_random_neuron_masks()
+            self._sync_neuron_masks_across_ranks()
+            self._ddp_assert_neuron_masks_identical()
+            self.save_masks(appendage=f"_{state.global_step}")
+            optimizer = kwargs.get("optimizer", None)
+            if optimizer is None:
+                print("no optimizer :(")
+                return
+            optimizer = self._unwrap_optimizer(optimizer)
+            if optimizer is not None and type(optimizer) == MaskedAdamW:
+                optimizer.set_mask_dict(self.neuron_masks, strict=True)
+                logger.info("SkipGradientCallback: set new random masks in optimizer.")
+                self._ddp_assert_optimizer_masks_identical(optimizer)
+            else:
+                logger.warning("SkipGradientCallback: optimizer is not MaskedAdamW; cannot set masks in optimizer.")
+                logger.warning(f"type(optimizer)={type(optimizer)}")
+                
+                
+        self._apply_fixed_masks()
+
+    #TODO: zero out optimizer? do we want to zero out the optimizer state, or do we just want to skip it when the gradient is zeroed out but keep the state and momentum?
+    def on_pre_optimizer_step(self, args, state, control, **kwargs):
+        optimizer = kwargs.get("optimizer", None)
+        if optimizer is None:
+            print("no optimizer :(")
+        if self.mode == "default":
+            self.on_pre_optimizer_step_default(args, state, control, **kwargs)
+        elif self.mode == "random":
+            self.on_pre_optimizer_step_random(args, state, control, **kwargs)
+
+    # def on_step_end(self, args, state, control, **kwargs):
+    #     # Fires after optimizer step; here global_step has just incremented
+    #     if _is_main():
+    #         print(f"[skipgradient][on_step_end] global_step={state.global_step}")
+            
+    # def on_substep_end(self, args, state, control, **kwargs):
+    #     # Fires after optimizer step; here global_step has just incremented
+    #     if _is_main():
+    #         print(f"[skipgradient][on_substep_end] global_step={state.global_step}")
+
+
+    @torch.no_grad()
+    def _sync_neuron_masks_across_ranks(self):
+        if not (dist.is_available() and dist.is_initialized()):
+            return
+
+        world_size = dist.get_world_size()
+        if world_size <= 1:
+            return
+
+        names = []
+        row_counts = []
+        devices = []
+        for name, p in self.model.named_parameters():
+            if p.ndim >= 2:
+                names.append(name)
+                row_counts.append(p.shape[0])
+                devices.append(p.device)
+
+        if not names:
+            self.neuron_masks = {}
+            return
+
+        total_rows = sum(row_counts)
+        if total_rows == 0:
+            self.neuron_masks = {}
+            return
+
+        rank = dist.get_rank()
+        buffer_device = devices[0]
+        flat_masks = torch.zeros(total_rows, dtype=torch.uint8, device=buffer_device)
+
+        if rank == 0:
+            offset = 0
+            for name, rows in zip(names, row_counts):
+                mask = self.neuron_masks.get(name)
+                if mask is not None:
+                    flat_masks[offset:offset + rows].copy_(mask.to(device=buffer_device, dtype=torch.uint8))
+                offset += rows
+
+        dist.broadcast(flat_masks, src=0)
+
+        new_masks = {}
+        offset = 0
+        for name, rows, device in zip(names, row_counts, devices):
+            slice_view = flat_masks[offset:offset + rows]
+            if slice_view.any():
+                new_masks[name] = slice_view.to(device=device, dtype=torch.bool)
+            offset += rows
+
+        self.neuron_masks = new_masks
+
+
+    @torch.no_grad()
+    def _ddp_assert_neuron_masks_identical(self):
+        """Check that self._fixed_neuron_masks are identical across ranks.
+        Call only on a synchronized step (require_backward_grad_sync == True)."""
+        zeroed = sum(int(m.sum().item()) for m in self.neuron_masks.values()) if self.neuron_masks else 0
+        if _is_main():
+            print(f"[skipgradient] masks: zeroing {zeroed}/{self._total_neuron_rows} elements (~{(zeroed/max(1,self._total_neuron_rows))*100:.2f}%).")
+        if not (dist.is_available() and dist.is_initialized()):
+            return  # single GPU or non-DDP
+
+
+        world_size = dist.get_world_size()
+        print(f"[MaskCheck] Verifying neuron masks across {world_size} ranks...")
+        rank = dist.get_rank()
+
+        # Canonical param list: all 2D+ params in named order
+        names = []
+        shapes = []
+        for name, p in self.model.named_parameters():
+            if p.ndim >= 2:
+                names.append(name)
+                shapes.append(p.shape)
+
+        # Build a vector of int64 checksums, one per param in 'names'
+        checks = []
+        for (name, shape) in zip(names, shapes):
+            rows = shape[0]
+            mask = self.neuron_masks.get(name, None)
+            if mask is None:
+                # Treat as all-zeros (no rows selected)
+                mask_cpu = torch.zeros(rows, dtype=torch.bool).cpu()
+            else:
+                # Ensure correct length and on CPU
+                assert mask.ndim == 1 and mask.numel() == rows, f"Row mask shape mismatch for {name}"
+                mask_cpu = mask.detach().to("cpu", dtype=torch.bool)
+
+            # Hash the raw bytes for exact equality (name+shape+mask contents)
+            h = hashlib.sha256()
+            h.update(name.encode("utf-8"))
+            h.update(str(tuple(shape)).encode("utf-8"))
+            h.update(mask_cpu.numpy().tobytes())
+            # take first 8 bytes as unsigned 64-bit int
+            h64 = int.from_bytes(h.digest()[:8], byteorder="big", signed=True)
+            checks.append(h64)
+
+        local_vec = torch.tensor(checks, dtype=torch.int64, device="cuda" if torch.cuda.is_available() else "cpu")
+
+        # Broadcast rank-0's vector as the reference
+        ref_vec = local_vec.clone()
+        dist.broadcast(ref_vec, src=0)
+
+        # Compare to reference and report any mismatches
+        mism = (local_vec != ref_vec)
+        num_mism = int(mism.sum().item())
+
+        # Aggregate across all ranks to see if any mismatches anywhere
+        total_mism = torch.tensor([num_mism], dtype=torch.int32, device=local_vec.device)
+        dist.all_reduce(total_mism, op=dist.ReduceOp.SUM)
+
+        if total_mism.item() != 0:
+            # Print which params differ on this rank (keep it concise)
+            bad_idxs = mism.nonzero(as_tuple=False).flatten().tolist()
+            bad_names = [names[i] for i in bad_idxs[:100]]  # truncate to first 100 for readability
+            print(f"[MaskCheck][rank {rank}] {num_mism} param masks differ from rank 0. e.g., {bad_names}")
+            # Optional: hard assert to fail fast
+            # raise RuntimeError(f"DDP mask mismatch on rank {rank}")
+        elif rank == 0:
+            print("[MaskCheck] All ranks have identical neuron masks ✔")
+
+
+    @torch.no_grad()
+    def _ddp_assert_optimizer_masks_identical(self, optimizer):
+        
+        if not (dist.is_available() and dist.is_initialized()):
+            return  # single GPU or non-DDP
+
+
+        world_size = dist.get_world_size()
+        print(f"[MaskCheck] Verifying optimizer masks across {world_size} ranks...")
+        rank = dist.get_rank()
+        mask_dict: Dict[str, torch.Tensor] = optimizer._mask_dict
+        print(f"[MaskCheck] mask dict has {len(mask_dict)} entries on rank {rank}")
+        # Canonical param list: all 2D+ params in named order
+        names = []
+        shapes = []
+        for name, p in mask_dict.items():
+            names.append(name)
+            shapes.append(p.shape)
+
+        # Build a vector of int64 checksums, one per param in 'names'
+        checks = []
+        for (name, shape) in zip(names, shapes):
+            rows = shape[0]
+            mask = mask_dict.get(name, None)
+            if mask is None:
+                # Treat as all-zeros (no rows selected)
+                mask_cpu = torch.zeros(rows, dtype=torch.bool).cpu()
+            else:
+                # Ensure correct length and on CPU
+                assert mask.ndim == 1 and mask.numel() == rows, f"Row mask shape mismatch for {name}"
+                mask_cpu = mask.detach().to("cpu", dtype=torch.bool)
+
+            # Hash the raw bytes for exact equality (name+shape+mask contents)
+            h = hashlib.sha256()
+            h.update(name.encode("utf-8"))
+            h.update(str(tuple(shape)).encode("utf-8"))
+            h.update(mask_cpu.numpy().tobytes())
+            # take first 8 bytes as unsigned 64-bit int
+            h64 = int.from_bytes(h.digest()[:8], byteorder="big", signed=True)
+            checks.append(h64)
+
+        local_vec = torch.tensor(checks, dtype=torch.int64, device="cuda" if torch.cuda.is_available() else "cpu")
+
+        # Broadcast rank-0's vector as the reference
+        ref_vec = local_vec.clone()
+        dist.broadcast(ref_vec, src=0)
+
+        # Compare to reference and report any mismatches
+        mism = (local_vec != ref_vec)
+        num_mism = int(mism.sum().item())
+
+        # Aggregate across all ranks to see if any mismatches anywhere
+        total_mism = torch.tensor([num_mism], dtype=torch.int32, device=local_vec.device)
+        dist.all_reduce(total_mism, op=dist.ReduceOp.SUM)
+
+        if total_mism.item() != 0:
+            # Print which params differ on this rank (keep it concise)
+            bad_idxs = mism.nonzero(as_tuple=False).flatten().tolist()
+            bad_names = [names[i] for i in bad_idxs[:100]]  # truncate to first 100 for readability
+            print(f"[MaskCheck][rank {rank}] {num_mism} optimizer masks differ from rank 0. e.g., {bad_names}")
+            # Optional: hard assert to fail fast
+            # raise RuntimeError(f"DDP mask mismatch on rank {rank}")
+        elif rank == 0:
+            print("[MaskCheck] All ranks have identical optimizer masks ✔")
