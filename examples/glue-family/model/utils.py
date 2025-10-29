@@ -159,6 +159,7 @@ def fix_linear_modules(
     config: AutoConfig.from_pretrained,
     skip_ratio: float = 0,
 ):
+    assert False, "Disabled for now."
 
     print(f"Architecture: {config.architectures}, Type: {config.model_type}, Name: {model.__class__.__name__}")
 
