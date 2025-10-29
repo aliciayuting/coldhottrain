@@ -1,11 +1,11 @@
 TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
-SKIP_RATIO=0.0
+SKIP_RATIO=0.8
 CHANGE_ITERS=1
 USE_LORA=true
 
-OUTPUT_BASE=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
+OUTPUT_BASE=/share/desa/nfs02/cold/runs/glue/$TASK
 
 # check if use lora is True
 if [ "$USE_LORA" = true ] ; then
@@ -44,7 +44,6 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
     --logging_dir $LOGGING_PATH \
-    --resume_from_checkpoint "/share/desa/nfs02/shouxu/cold/runs/glue/mnli/runs/roberta-base-lora--seed0/checkpoint-5000" \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
     --fp16 \
