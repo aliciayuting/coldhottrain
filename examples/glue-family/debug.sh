@@ -5,7 +5,7 @@ SKIP_RATIO=0.8
 CHANGE_ITERS=1
 
 # OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK/$MODEL_NAME/$SKIP_RATIO/$SEED
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK/
+OUTPUT_PATH=/share/desa/nfs02/cold/jamal-runs-benckmarking/$TASK/
 # OUTPUT_PATH=$OUTPUT_BASE/$SKIP_RATIO/$SEED
 # RUN_NAME=DEBUG-$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED
 RUN_NAME=DEBUG
@@ -23,7 +23,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --learning_rate 2e-5 \
     --num_train_epochs 5 \
     --logging_strategy steps \
-    --logging_steps 1 \
+    --logging_steps 100 \
     --save_strategy steps \
     --save_steps 500 \
     --save_total_limit 3 \
@@ -39,15 +39,14 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --logging_dir $LOGGING_PATH \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
-    --skip_ratio 0.1 \
-    --fp16 \
-    --change_iters 100 \
-    --use_masked_skipgradient \
     --fp16 \
     --gradient_checkpointing \
-    --max_steps 5 \
     | tee ./logs/$RUN_NAME.txt
 
+
+    # --skip_ratio 0.8 \
+    # --change_iters 100 \
+    # --use_masked_skipgradient \
     # --skip_ratio $SKIP_RATIO \
     # --my_debug True \
     # --use_masked_skipgradient \

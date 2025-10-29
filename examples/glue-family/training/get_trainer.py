@@ -99,6 +99,12 @@ def get_trainer(args):
     else:
         model = get_model(args=args, task_type=TaskType.MULTIPLE_CHOICE, config=config)
 
+    # for name, param in model.named_parameters():
+    #     if "query" in name or "value" in name or "classifier" in name:
+    #         param.requires_grad = True
+    #     else:
+    #         param.requires_grad = False
+
     adapter_setup = None
     # # ScaLearn + AdapterFusion
     # if fusion_args.train_fusion:
@@ -390,7 +396,7 @@ def get_trainer(args):
 
     logger.info(summary(model, depth=5))
 
-    if coldneuron_args.skip_ratio > 0:
+    if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
         print(f"***** using skipgradient with ratio {coldneuron_args.skip_ratio} *****")
         fix_linear_modules(model, config, coldneuron_args.skip_ratio)
 
@@ -401,7 +407,7 @@ def get_trainer(args):
         opt_kwargs = {
             "mask_dict": {},
             "named_parameters": dict(model.named_parameters()),
-            "freeze_state": "none",  # or "decay" or "full" per your preference
+            "freeze_state": "zero", 
             "lr": training_args.learning_rate,
             "fused": True,
         }
