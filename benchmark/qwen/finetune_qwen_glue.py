@@ -44,8 +44,8 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 0.2    
-CHANGE_RANDOM_EVERY_ITERS = 100
+RANDOM_HOT_K_PERCENT = 1.0    
+CHANGE_RANDOM_EVERY_ITERS = 0
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
 output_dir = f"{SCRATCH}/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -150,6 +150,16 @@ def compute_metrics(eval_pred):
     return accuracy  # Returns {"accuracy": 0.923}
 
 
+
+# for name, param in model.named_parameters():
+#         if "query" in name or "value" in name or "classifier" in name:
+#             param.requires_grad = True
+#         else:
+#             param.requires_grad = False
+
+for name, param in model.named_parameters():
+        print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
+    
 opt_kwargs = {
     "mask_dict": {},
     "named_parameters": dict(model.named_parameters()),

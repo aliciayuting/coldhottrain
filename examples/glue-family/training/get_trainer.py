@@ -100,11 +100,7 @@ def get_trainer(args):
     else:
         model = get_model(args=args, task_type=TaskType.MULTIPLE_CHOICE, config=config)
 
-    # for name, param in model.named_parameters():
-    #     if "query" in name or "value" in name or "classifier" in name:
-    #         param.requires_grad = True
-    #     else:
-    #         param.requires_grad = False
+    
 
     # # ScaLearn + AdapterFusion
     # if fusion_args.train_fusion:
@@ -159,6 +155,7 @@ def get_trainer(args):
             #     adapter_config = model.get_adapters_config(adapter_name)
             #     print(f"Adapter config for {adapter_name}: {adapter_config}")
 
+ 
 
     param_optimizer = list(model.named_parameters())
     logger.info("Trainable parameters:")
@@ -187,7 +184,11 @@ def get_trainer(args):
     else:
         early_stopping_callback = []
 
-
+    # for name, param in model.named_parameters():
+    #     if (("query" in name or "value" in name) and 'lora' in name) or "classifier" in name:
+    #         param.requires_grad = True
+    #     else:
+    #         param.requires_grad = False
     for name, param in model.named_parameters():
         print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
     logger.info(summary(model, depth=5))
