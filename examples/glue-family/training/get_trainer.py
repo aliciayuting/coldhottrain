@@ -103,6 +103,7 @@ def get_trainer(args):
 
     # config lora using adapters lib
     if adapter_args.train_adapter:
+        assert coldneuro_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
         if dataset.multiple_choice:
             model.add_multiple_choice_head(data_args.task_name, num_choices=2)
         else:
@@ -144,14 +145,6 @@ def get_trainer(args):
             #     print(f"Adapter config for {adapter_name}: {adapter_config}")
 
 
-
-    for name, param in model.named_parameters():
-        print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
-
-        # print out the shape of param
-
-
-
     param_optimizer = list(model.named_parameters())
     logger.info("Trainable parameters:")
     for n, p in param_optimizer:
@@ -180,6 +173,8 @@ def get_trainer(args):
         early_stopping_callback = []
 
 
+    for name, param in model.named_parameters():
+        print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
     logger.info(summary(model, depth=5))
 
     if coldneuron_args.skip_ratio > 0:
@@ -188,7 +183,7 @@ def get_trainer(args):
 
 
     if coldneuron_args.use_masked_skipgradient:
-        
+        assert coldneuron_args.skip_ratio > 0, "skip_ratio must be > 0 when using masked skipgradient."
         print("***** using masked skipgradient *****")
         opt_kwargs = {
             "mask_dict": {},
@@ -214,7 +209,7 @@ def get_trainer(args):
             tokenizer=tokenizer,
             data_collator=dataset.data_collator,
             callbacks=early_stopping_callback,
-            optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
+            optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs),
         )
         trainer.create_optimizer()
         trainer.add_callback(skipgradient_cb)
@@ -231,8 +226,10 @@ def get_trainer(args):
         )
         trainer.create_optimizer()
 
-    vram_breakdown_callback = VramBreakdownCallback()
-    trainer.add_callback(vram_breakdown_callback)
+    
+
+    # vram_breakdown_callback = VramBreakdownCallback()
+    # trainer.add_callback(vram_breakdown_callback)
 
     opt = trainer.optimizer
     for i, g in enumerate(opt.param_groups):

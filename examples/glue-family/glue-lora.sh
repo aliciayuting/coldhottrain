@@ -5,7 +5,7 @@ SKIP_RATIO=0.8
 CHANGE_ITERS=1
 USE_LORA=true
 
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK/
+OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
 
 # check if use lora is True
 if [ "$USE_LORA" = true ] ; then

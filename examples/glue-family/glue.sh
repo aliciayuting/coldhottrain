@@ -3,24 +3,28 @@ MODEL_NAME=roberta-base
 SEED=0
 SKIP_RATIO=0.8
 CHANGE_ITERS=1
-USE_LORA=true
+USE_LORA=false
 
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK/
+OUTPUT_BASE=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
 
 # check if use lora is True
 if [ "$USE_LORA" = true ] ; then
-    RUN_NAME=$MODEL_NAME-lora--seed$SEED
+    RUN_NAME=DEBUG-$MODEL_NAME-lora--seed$SEED
 # else if skip_ratio > 0
 elif (( $(echo "$SKIP_RATIO > 0" | bc -l) )); then
-    RUN_NAME=$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED
+    RUN_NAME=DEBUG-$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED
 else
-    RUN_NAME=$MODEL_NAME-fp-seed$SEED
+    RUN_NAME=DEBUG-$MODEL_NAME-fp-seed$SEED
 fi
 
 
-LOGGING_PATH=$OUTPUT_PATH/runs/$RUN_NAME
+RUN_NAME=DEBUG
 
-CUDA_VISIBLE_DEVICES=0 python main.py \
+OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
+
+# LOGGING_PATH=$OUTPUT_PATH/runs/$RUN_NAME
+
+PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --model-name roberta-base \
     --task-name $TASK \
     --do-train True \
@@ -32,16 +36,12 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --learning_rate 2e-5 \
     --num_train_epochs 5 \
     --logging_strategy steps \
-    --logging_steps 100 \
+    --logging_steps 1 \
     --save_strategy steps \
-    --save_steps 500 \
+    --save_steps 10 \
     --save_total_limit 3 \
     --eval_strategy steps \
-    --eval_steps 500 \
-    --early_stopping True \
-    --early_stopping_patience 5 \
-    --load_best_model_at_end True \
-    --metric_for_best_model eval_loss \
+    --eval_steps 10 \
     --seed $SEED \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
@@ -49,16 +49,34 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
     --fp16 \
-    --gradient_checkpointing \
-    --use_lora $USE_LORA \
-    --lora_rank 32 \
-    --lora_scaling_factor 64 \
+    --gradient_checkpointing True \
+    --max_steps 40 \
+    --early_stopping True \
+    --early_stopping_patience 5 \
+    --load_best_model_at_end True \
+    --metric_for_best_model eval_loss \
+    --greater_is_better false \
     | tee ./logs/$RUN_NAME.txt
+
+
+    # --train_adapter True \
+    # --adapter_config lora \
+
+
+
 
     # --skip_ratio $SKIP_RATIO \
     # --my_debug True \
     # --use_masked_skipgradient \
     # --change_iters $CHANGE_ITERS \
+
+
+    # --use_lora $USE_LORA \
+    # --lora_rank 32 \
+    # --lora_scaling_factor 64 \
+
+
+    
 
     # --lora_attn_matrices q_proj v_proj \
     

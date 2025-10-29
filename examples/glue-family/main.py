@@ -188,6 +188,11 @@ def main() -> None:
 
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
+
+        print(f"Best model checkpoint: {trainer.state.best_model_checkpoint}")
+        print(f"Best metric value: {trainer.state.best_metric}")
+
+
         evaluate_fn(trainer, data_args, dataset)
 
     # kwargs = {

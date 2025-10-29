@@ -348,23 +348,6 @@ class ColdNeuronArguments:
         default=1000, metadata={"help": "Change mask every these many iterations."}
     )
 
-    use_lora: bool = field(
-        default=False, metadata={"help": "Whether to use LoRA."}
-    )
-
-    lora_rank: int = field(
-        default=32, metadata={"help": "LoRA rank."}
-    )
-
-    lora_scaling_factor: int = field(
-        default=64, metadata={"help": "LoRA scaling factor."}
-    )
-
-    lora_attn_matrices: list[str] = field(
-        default_factory=lambda: ["q_proj", "v_proj"],
-        metadata={"help": "List of attention matrices to apply LoRA to."}
-    )
-
 
 def get_args():
     """Parse all the args."""
