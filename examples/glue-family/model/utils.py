@@ -54,8 +54,8 @@ def get_model(
         coldneuron_args,
     ) = args
 
-    if adapter_args.train_adapter:
-    # if False:
+    # if adapter_args.train_adapter:
+    if False:
         print("***** Using LoRA finetuning *****")
 
         # We use the AutoAdapterModel class here for better adapter support.

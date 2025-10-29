@@ -27,7 +27,7 @@ from probe2 import VramBreakdownCallback
 from model.utils import fix_linear_modules
 # from transformers.adapters.configuration import AdapterConfig, PfeifferConfig
 from adapters.training import setup_adapter_training
-
+import adapters
 
 logger = logging.getLogger(__name__)
 
@@ -103,25 +103,31 @@ def get_trainer(args):
 
     # config lora using adapters lib
     if adapter_args.train_adapter:
-        assert coldneuro_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
-        if dataset.multiple_choice:
-            model.add_multiple_choice_head(data_args.task_name, num_choices=2)
-        else:
-            if data_args.dataset_name == "humset":
-                multi_label = True
-            else:
-                multi_label = False
-            model.add_classification_head(
-                data_args.task_name,
-                num_labels=dataset.num_labels,
-                id2label={i: v for i, v in enumerate(dataset.label_list)}
-                if not dataset.is_regression
-                else None,
-                layers=model_args.head_n_layers
-                if model_args.head_n_layers
-                else get_default_args(model.add_classification_head)["layers"],
-                multilabel=multi_label,
-            )
+        assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
+        ''' Use adapter auto model, add head manually '''
+        # if dataset.multiple_choice:
+        #     model.add_multiple_choice_head(data_args.task_name, num_choices=2)
+        # else:
+        #     if data_args.dataset_name == "humset":
+        #         multi_label = True
+        #     else:
+        #         multi_label = False
+        #     model.add_classification_head(
+        #         data_args.task_name,
+        #         num_labels=dataset.num_labels,
+        #         id2label={i: v for i, v in enumerate(dataset.label_list)}
+        #         if not dataset.is_regression
+        #         else None,
+        #         layers=model_args.head_n_layers
+        #         if model_args.head_n_layers
+        #         else get_default_args(model.add_classification_head)["layers"],
+        #         multilabel=multi_label,
+        #     )
+
+        ''' Use huggingface model directly, setup adapter training '''
+        adapters.init(model)
+
+        
 
         # Setup adapters
         # if not data_args.omega_grid:
