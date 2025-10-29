@@ -227,9 +227,8 @@ def get_trainer(args):
         trainer.create_optimizer()
 
     
-
-    # vram_breakdown_callback = VramBreakdownCallback()
-    # trainer.add_callback(vram_breakdown_callback)
+    vram_breakdown_callback = VramBreakdownCallback()
+    trainer.add_callback(vram_breakdown_callback)
 
     opt = trainer.optimizer
     for i, g in enumerate(opt.param_groups):

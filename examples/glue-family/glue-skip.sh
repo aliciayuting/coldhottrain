@@ -1,33 +1,29 @@
 TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
-SKIP_RATIO=0.8
-CHANGE_ITERS=500
+# make skip ratio as an argument to facilitate job script
+SKIP_RATIO=$1
+CHANGE_ITERS=$2
+echo $SKIP_RATIO $CHANGE_ITERS
+
 USE_LORA=false
-DEBUG=false
 
-DEBUG_FLAG=""
-if [ "$DEBUG" = true ] ; then
-    DEBUG_FLAG="DEBUG-"
-fi
-
-OUTPUT_PATH=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
+OUTPUT_BASE=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
 
 # check if use lora is True
 if [ "$USE_LORA" = true ] ; then
-    RUN_NAME=${DEBUG_FLAG}$MODEL_NAME-lora--seed$SEED
+    RUN_NAME=$MODEL_NAME-lora--seed$SEED
 # else if skip_ratio > 0
 elif (( $(echo "$SKIP_RATIO > 0" | bc -l) )); then
-    RUN_NAME=${DEBUG_FLAG}$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED
+    RUN_NAME=$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED
 else
-    RUN_NAME=${DEBUG_FLAG}$MODEL_NAME-fp-seed$SEED
+    RUN_NAME=$MODEL_NAME-fp-seed$SEED
 fi
 
-# RUN_NAME=DEBUG
+OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
+LOGGING_PATH=$OUTPUT_BASE/tensorboard_logs/$RUN_NAME
 
-LOGGING_PATH=$OUTPUT_PATH/runs/$RUN_NAME
-
-CUDA_VISIBLE_DEVICES=0 python main.py \
+PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --model-name roberta-base \
     --task-name $TASK \
     --do-train True \
@@ -37,7 +33,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --per_device_eval_batch_size 32 \
     --dataloader_num_workers 0 \
     --learning_rate 2e-5 \
-    --num_train_epochs 5 \
+    --num_train_epochs 3 \
     --logging_strategy steps \
     --logging_steps 100 \
     --save_strategy steps \
@@ -45,10 +41,6 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --save_total_limit 3 \
     --eval_strategy steps \
     --eval_steps 500 \
-    --early_stopping True \
-    --early_stopping_patience 5 \
-    --load_best_model_at_end True \
-    --metric_for_best_model eval_loss \
     --seed $SEED \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
@@ -57,19 +49,33 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --ddp_find_unused_parameters False \
     --fp16 \
     --gradient_checkpointing True \
+    --load_best_model_at_end True \
+    --metric_for_best_model eval_loss \
+    --greater_is_better false \
     --skip_ratio $SKIP_RATIO \
     --use_masked_skipgradient \
     --change_iters $CHANGE_ITERS \
-    | tee ./logs/$RUN_NAME.txt
+
+    # | tee ./logs/$RUN_NAME.txt
+
+
+    # --early_stopping True \
+    # --early_stopping_patience 5 \
+
+    # --train_adapter True \
+    # --adapter_config lora \
 
 
 
+
+    # --my_debug True \
+
+    
 
 
     # --use_lora $USE_LORA \
     # --lora_rank 32 \
     # --lora_scaling_factor 64 \
-    # --my_debug \
 
 
     
