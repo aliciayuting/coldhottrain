@@ -15,6 +15,10 @@ from adapters import AutoAdapterModel
 from model.custom_module import LinearColWise
 
 from peft import LoraConfig, get_peft_model, TaskType as PeftTaskType
+from torchinfo import summary
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TaskType(Enum):
     TOKEN_CLASSIFICATION = (1,)
@@ -172,6 +176,15 @@ def fix_linear_modules(
     # print("=" * 50)
     # print()
 
+    # fix all params
+    model.requires_grad_(False)
+
+    # for the classifier head, enable all grads
+    if hasattr(model, 'classifier'):
+        for name, param in model.classifier.named_parameters():
+            print(f"Unfreezing classifier param: {name}")
+            param.requires_grad = True
+
 
     if hasattr(model, 'encoder'):
         encoder = model.encoder
@@ -188,29 +201,38 @@ def fix_linear_modules(
     for layer_idx, layer in enumerate(encoder.layer):
         # Iterate through all modules in this layer
         for name, module in layer.named_modules():
-            if isinstance(module, nn.Linear):
-                # Get the parent module and attribute name
-                parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
-                attr_name = name.split('.')[-1]
+            # if layer_idx == 0:
+            #     print(f"Layer 0 module: {name}, type: {module.__class__.__name__}")
+            # if isinstance(module, nn.Linear):
+            if name.endswith("query") or name.endswith("value"):
+                # # Get the parent module and attribute name
+                # parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
+                # attr_name = name.split('.')[-1]
                 
-                # Get parent module
-                if parent_name:
-                    parent = layer
-                    for part in parent_name.split('.'):
-                        parent = getattr(parent, part)
-                else:
-                    parent = layer
+                # # Get parent module
+                # if parent_name:
+                #     parent = layer
+                #     for part in parent_name.split('.'):
+                #         parent = getattr(parent, part)
+                # else:
+                #     parent = layer
                 
-                out_features = module.out_features
+                # out_features = module.out_features
                 
-                # Replace the linear module
-                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
-                wrapped = replace_linear_with_colwise(module, hot_idx)
-                setattr(parent, attr_name, wrapped)
+                # # Replace the linear module
+                # hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
+                # wrapped = replace_linear_with_colwise(module, hot_idx)
+                # setattr(parent, attr_name, wrapped)
                 
-                # Track the replacement
-                full_name = f"encoder.layer.{layer_idx}.{name}"
+                # # Track the replacement
+                # full_name = f"encoder.layer.{layer_idx}.{name}"
                 # print(f"Replaced: {full_name}")
+
+                module.requires_grad = True
+                for pm, param in module.named_parameters():
+                    param.requires_grad = True
+                    print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
+
 
     encoder_layers = model.roberta.encoder.layer
     print(f"Number of encoder layers: {len(encoder_layers)}")
@@ -238,4 +260,8 @@ def fix_linear_modules(
         # Feed-forward network components
         print(f"  - Intermediate dense: {layer.intermediate.dense} input_features: {layer.intermediate.dense.in_features} output_features: {layer.intermediate.dense.out_features}")
         print(f"  - Output dense: {layer.output.dense} input_features: {layer.output.dense.in_features} output_features: {layer.output.dense.out_features}")
+
+    for name, param in model.named_parameters():
+        print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
+    logger.info(summary(model, depth=5))
 

@@ -44,6 +44,7 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
     --logging_dir $LOGGING_PATH \
+    --resume_from_checkpoint "/share/desa/nfs02/shouxu/cold/runs/glue/mnli/runs/roberta-base-lora--seed0/checkpoint-5000" \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
     --fp16 \

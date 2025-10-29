@@ -1,11 +1,8 @@
 TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
-# make skip ratio as an argument to facilitate job script
-SKIP_RATIO=$1
-CHANGE_ITERS=$2
-echo $SKIP_RATIO $CHANGE_ITERS
-
+SKIP_RATIO=0.8
+CHANGE_ITERS=500
 USE_LORA=false
 
 OUTPUT_BASE=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
@@ -19,6 +16,8 @@ elif (( $(echo "$SKIP_RATIO > 0" | bc -l) )); then
 else
     RUN_NAME=$MODEL_NAME-fp-seed$SEED
 fi
+
+RUN_NAME="DEBUG"
 
 OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
 LOGGING_PATH=$OUTPUT_BASE/tensorboard_logs/$RUN_NAME
@@ -53,8 +52,24 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --metric_for_best_model eval_loss \
     --greater_is_better false \
     --skip_ratio $SKIP_RATIO \
-    --use_masked_skipgradient \
-    --change_iters $CHANGE_ITERS \
+    --max_steps 1000 \
+    
+
+    # --use_masked_skipgradient \
+    # --change_iters $CHANGE_ITERS \
+
+
+    # --max_steps 2 \
+    # --my_debug True \
+
+
+    # --train_adapter True \
+    # --adapter_config lora \
+
+    # --resume_from_checkpoint "/share/desa/nfs02/shouxu/cold/runs/glue/mnli/runs/roberta-base-lora--seed0/checkpoint-5000" \
+
+    
+    
 
     # | tee ./logs/$RUN_NAME.txt
 
@@ -62,15 +77,15 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     # --early_stopping True \
     # --early_stopping_patience 5 \
 
-    # --train_adapter True \
-    # --adapter_config lora \
+    # --max_steps 2000 \
+    # --my_debug \
 
 
 
-
+    # --skip_ratio $SKIP_RATIO \
     # --my_debug True \
-
-    
+    # --use_masked_skipgradient \
+    # --change_iters $CHANGE_ITERS \
 
 
     # --use_lora $USE_LORA \
