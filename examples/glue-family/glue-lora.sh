@@ -17,7 +17,7 @@ else
     RUN_NAME=$MODEL_NAME-fp-seed$SEED
 fi
 
-# RUN_NAME="DEBUG"
+RUN_NAME="DEBUG-lora"
 
 OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
 LOGGING_PATH=$OUTPUT_BASE/tensorboard_logs/$RUN_NAME
@@ -32,7 +32,7 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --per_device_eval_batch_size 32 \
     --dataloader_num_workers 0 \
     --learning_rate 3e-4 \
-    --num_train_epochs 3 \
+    --num_train_epochs 5 \
     --logging_strategy steps \
     --logging_steps 100 \
     --save_strategy steps \
@@ -55,6 +55,7 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --adapter_config lora \
     
     
+    # --resume_from_checkpoint "/share/desa/nfs02/shouxu/cold/runs/glue/mnli/runs/roberta-base-lora--seed0/checkpoint-5000" \
 
     # | tee ./logs/$RUN_NAME.txt
 

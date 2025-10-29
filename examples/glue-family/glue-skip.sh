@@ -1,7 +1,7 @@
 TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
-SKIP_RATIO=0.8
+SKIP_RATIO=0
 CHANGE_ITERS=500
 USE_LORA=false
 
@@ -31,7 +31,7 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 32 \
     --dataloader_num_workers 0 \
-    --learning_rate 2e-5 \
+    --learning_rate 2e-4 \
     --num_train_epochs 3 \
     --logging_strategy steps \
     --logging_steps 100 \
@@ -47,13 +47,15 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
     --fp16 \
-    --gradient_checkpointing True \
     --load_best_model_at_end True \
     --metric_for_best_model eval_loss \
     --greater_is_better false \
-    --skip_ratio $SKIP_RATIO \
-    --max_steps 1000 \
+
+    # --gradient_checkpointing True \
     
+    # --max_steps 5000 \
+    
+    # --skip_ratio $SKIP_RATIO \
 
     # --use_masked_skipgradient \
     # --change_iters $CHANGE_ITERS \
