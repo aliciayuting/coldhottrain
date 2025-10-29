@@ -100,42 +100,6 @@ def get_trainer(args):
     else:
         model = get_model(args=args, task_type=TaskType.MULTIPLE_CHOICE, config=config)
 
-    
-
-    # # ScaLearn + AdapterFusion
-    # if fusion_args.train_fusion:
-    #     af_config = json.load(open(fusion_args.fusion_load_dir))
-
-    # encoder = model.roberta.encoder
-    # last_layer = encoder.layer[-1]
-    # for name, module in last_layer.named_modules():
-    #     if "query" in name or "value" in name:
-    #         for param in module.parameters():
-    #             param.requires_grad = False
-    #
-    
-
-
-    # for layer_idx, layer in enumerate(encoder.layer):
-    #     if layer_idx != len(encoder.layer) - 1:
-    #         continue
-    #     # Iterate through all modules in this layer
-    #     for name, module in layer.named_modules():
-    #         # Check if the module is a FeedForward network
-    #         if "query" in name:
-    #             module.requires_grad = False
-               
-    # for name, param in model.named_parameters():
-    #     if not ("query" in name or "value" in name or "classifier" in name):
-    #         param.requires_grad = False
-
-        # print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
-
-    # from torch.optim import AdamW
-    # optimizer = AdamW(
-    #     filter(lambda p: p.requires_grad, model.parameters()), 
-    #     lr=training_args.learning_rate
-    # )
 
     # config lora using adapters lib
     if adapter_args.train_adapter:
@@ -224,13 +188,23 @@ def get_trainer(args):
         print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
     logger.info(summary(model, depth=5))
 
-    if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient and not adapter_args.train_adapter:
-        print(f"***** using skipgradient with ratio {coldneuron_args.skip_ratio} *****")
-        fix_linear_modules(model, config, coldneuron_args.skip_ratio)
+    # if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient and not adapter_args.train_adapter:
+    #     print(f"***** using skipgradient with ratio {coldneuron_args.skip_ratio} *****")
+    #     fix_linear_modules(model, config, coldneuron_args.skip_ratio)
 
 
     if coldneuron_args.use_masked_skipgradient:
-        assert coldneuron_args.skip_ratio > 0, "skip_ratio must be > 0 when using masked skipgradient."
+
+        for name, param in model.named_parameters():
+            if not ("query" in name or "value" in name or "classifier" in name):
+                param.requires_grad = False
+
+            print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
+
+        # # from torch.optim import AdamW
+        # optimizer = MaskedAdamW(
+        #     filter(lambda p: p.requires_grad, model.parameters()), 
+        # )
         print("***** using masked skipgradient *****")
         opt_kwargs = {
             "mask_dict": {},

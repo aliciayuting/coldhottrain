@@ -114,11 +114,11 @@ def main() -> None:
 
 
     # print out args
-    # print("Model Arguments:", model_args)
-    # print("Data Arguments:", data_args)
-    # print("Training Arguments:", training_args)
-    # print("Adapter Arguments:", adapter_args)
-    # print("ColdNeuron Arguments:", coldneuron_args)
+    print("Model Arguments:", model_args)
+    print("Data Arguments:", data_args)
+    print("Training Arguments:", training_args)
+    print("Adapter Arguments:", adapter_args)
+    print("ColdNeuron Arguments:", coldneuron_args)
 
     os.environ["WANDB_WATCH"] = "false"
     os.environ["WANDB_LOG_MODEL "] = "false"

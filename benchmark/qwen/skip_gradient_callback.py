@@ -82,7 +82,8 @@ class SkipGradientCallback(TrainerCallback):
         param_refs = []  # (name, rows)
         total_rows = 0
         for name, p in self.model.named_parameters():
-            
+            if not p.requires_grad:
+                continue
             #print(f"considering param {name} with shape {p.shape}")
             if p.ndim < 2 or self.layer_in_ignore_list(name):
                 #print(f"ignoring param {name} with shape {p.shape}")

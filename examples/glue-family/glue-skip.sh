@@ -1,23 +1,26 @@
 TASK=mnli
 MODEL_NAME=roberta-base
 SEED=0
-SKIP_RATIO=0
-CHANGE_ITERS=500
+# SKIP_RATIO=0.92
+# CHANGE_ITERS=100
+SKIP_RATIO=$1
+CHANGE_ITERS=$2
+LR=$3
 USE_LORA=false
 
 OUTPUT_BASE=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
 
 # check if use lora is True
 if [ "$USE_LORA" = true ] ; then
-    RUN_NAME=$MODEL_NAME-lora--seed$SEED
+    RUN_NAME=$MODEL_NAME-lora-seed$SEED-lr$LR
 # else if skip_ratio > 0
 elif (( $(echo "$SKIP_RATIO > 0" | bc -l) )); then
-    RUN_NAME=$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED
+    RUN_NAME=$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED-lr$LR
 else
-    RUN_NAME=$MODEL_NAME-fp-seed$SEED
+    RUN_NAME=$MODEL_NAME-fp-seed$SEED-lr$LR
 fi
 
-RUN_NAME="DEBUG"
+# RUN_NAME="DEBUG"
 
 OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
 LOGGING_PATH=$OUTPUT_BASE/tensorboard_logs/$RUN_NAME
@@ -31,7 +34,7 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 32 \
     --dataloader_num_workers 0 \
-    --learning_rate 2e-4 \
+    --learning_rate $LR \
     --num_train_epochs 3 \
     --logging_strategy steps \
     --logging_steps 100 \
@@ -50,12 +53,14 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --load_best_model_at_end True \
     --metric_for_best_model eval_loss \
     --greater_is_better false \
+    --skip_ratio $SKIP_RATIO \
+    --use_masked_skipgradient \
+    --change_iters $CHANGE_ITERS \
 
     # --gradient_checkpointing True \
     
     # --max_steps 5000 \
     
-    # --skip_ratio $SKIP_RATIO \
 
     # --use_masked_skipgradient \
     # --change_iters $CHANGE_ITERS \
