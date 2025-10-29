@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from transformers import HfArgumentParser, TrainingArguments
-# from transformers.adapters import AdapterArguments
+from adapters import AdapterArguments
 
 task_to_keys = {
     "cola": ("sentence", None),
@@ -373,7 +373,7 @@ def get_args():
             ModelArguments,
             DataTrainingArguments,
             TrainingArguments,
-            # AdapterArguments,
+            AdapterArguments,
             # FusionArguments,
             # TwoStageMTLArguments,
             ColdNeuronArguments

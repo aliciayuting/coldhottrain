@@ -10,7 +10,7 @@ from transformers import (
     AutoModelForSequenceClassification,
     AutoModelForTokenClassification,
 )
-# from transformers.adapters import AutoAdapterModel
+from adapters import AutoAdapterModel
 
 from model.custom_module import LinearColWise
 
@@ -48,25 +48,26 @@ def get_model(
         model_args,
         data_args,
         training_args,
-        # adapter_args,
+        adapter_args,
         # fusion_args,
         # mtl_args,
         coldneuron_args,
     ) = args
 
-    # if adapter_args.train_adapter:
-    if False:
-        assert False
+    if adapter_args.train_adapter:
+    # if False:
+        print("***** Using LoRA finetuning *****")
+
         # We use the AutoAdapterModel class here for better adapter support.
-        # model = AutoAdapterModel.from_pretrained(
-        #     model_args.model_name_or_path,
-        #     from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        #     config=config,
-        #     cache_dir=model_args.cache_dir,
-        #     revision=model_args.model_revision,
-        #     use_auth_token=True if model_args.use_auth_token else None,
-        #     ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
-        # )
+        model = AutoAdapterModel.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+        )
 
     else:
         model_class = AUTO_MODELS[task_type]
@@ -80,18 +81,19 @@ def get_model(
             ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
         )
 
-    if coldneuron_args.use_lora:
-        assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
-        print("***** Using LoRA finetuning *****")
-        peft_config = LoraConfig(
-            task_type=AUTO_PEFT_TASKS[task_type],
-            target_modules=["query", "value"], # TODO: make it configurable and generalizable for all models
-            modules_to_save=["classifier"],
-            r=coldneuron_args.lora_rank,
-            lora_alpha=coldneuron_args.lora_scaling_factor,
-            lora_dropout=0.05,
-        )
-        model = get_peft_model(model, peft_config)
+    # if coldneuron_args.use_lora:
+        # assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
+        # print("***** Using LoRA finetuning *****")
+        # peft_config = LoraConfig(
+        #     task_type=AUTO_PEFT_TASKS[task_type],
+        #     target_modules=["query", "value"], # TODO: make it configurable and generalizable for all models
+        #     modules_to_save=["classifier"],
+        #     r=coldneuron_args.lora_rank,
+        #     lora_alpha=coldneuron_args.lora_scaling_factor,
+        #     lora_dropout=0.05,
+        #     inference_mode=False,
+        # )
+        # model = get_peft_model(model, peft_config)
 
     bert_param = 0
     # if fix_bert:
@@ -110,12 +112,18 @@ def get_model(
     #             param.requires_grad = False
     #         for _, param in model.deberta.named_parameters():
     #             bert_param += param.numel()
-    all_param = 0
-    for name, param in model.named_parameters():
-        print(f"Param: {name}, Numel: {param.numel()}, Requires grad: {param.requires_grad}")
-        all_param += param.numel()
-    total_param = all_param - bert_param
-    print("***** total param is {} *****".format(total_param))
+
+    # model.print_trainable_parameters() will print these info
+    # all_param = 0
+    # trainable_params = 0
+    # for name, param in model.named_parameters():
+    #     print(f"Param: {name}, Numel: {param.numel()}, Requires grad: {param.requires_grad}")
+    #     all_param += param.numel()
+    #     if param.requires_grad:
+    #         trainable_params += param.numel()
+    # total_param = all_param - bert_param
+    # print("***** total param is {} trainable param is {} *****".format(total_param, trainable_params))
+    # model.print_trainable_parameters()
     return model
 
 

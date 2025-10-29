@@ -106,7 +106,7 @@ def main() -> None:
         model_args,
         data_args,
         training_args,
-        # adapter_args,
+        adapter_args,
         # fusion_args,
         # mtl_args,
         coldneuron_args,
@@ -117,6 +117,7 @@ def main() -> None:
     print("Model Arguments:", model_args)
     print("Data Arguments:", data_args)
     print("Training Arguments:", training_args)
+    print("Adapter Arguments:", adapter_args)
     print("ColdNeuron Arguments:", coldneuron_args)
 
     os.environ["WANDB_WATCH"] = "false"
@@ -152,9 +153,8 @@ def main() -> None:
     set_seed(training_args.seed)
 
     trainer, model, dataset, _ = get_trainer(args=args)
-    for m in model.modules():
-        print(type(m), m)
-    exit(0)
+
+
     if coldneuron_args.my_debug:
         print("***** Debug Mode Activated *****")
         return
