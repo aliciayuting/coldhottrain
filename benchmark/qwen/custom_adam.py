@@ -15,7 +15,7 @@ class MaskedAdamW(AdamW):
         *,
         mask_dict: Optional[Dict[str, torch.Tensor]] = None,
         named_parameters: Optional[Dict[str, nn.Parameter]] = None,
-        freeze_state: str = "none",  # "none" (default), "decay", or "full"
+        freeze_state: str = "zero",  # "none", "decay", "full", or "zero"
         **kwargs,
     ):
         """
@@ -23,10 +23,11 @@ class MaskedAdamW(AdamW):
         - mask_dict: maps PARAMETER NAMES -> 1D bool mask (len == param.shape[0]).
         - named_parameters: dict(model.named_parameters()) so we can map ids->names
                             when `params` are grouped (HF Trainer).
-        - freeze_state:
-            "none"  = let moments update (original behavior)
-            "decay" = zero masked grads so moments decay
-            "full"  = also restore state rows to pre-step values
+        - freeze_state (affects masked rows only):
+            "none"  = keep weights frozen; let moments update (no grad zeroing; no state restore)
+            "decay" = keep weights frozen; zero masked grads so moments just decay
+            "full"  = keep weights frozen; restore moments to pre-step values
+            "zero"  = set weights to 0 after step; zero the corresponding moments
         """
         super().__init__(params, **kwargs)
 
@@ -60,9 +61,7 @@ class MaskedAdamW(AdamW):
             p = name_to_param.get(name)
             if p is None:
                 if strict:
-                    # With HF we expect names to match; help the user fail fast
                     raise KeyError(f"Mask provided for '{name}', but no such parameter is in optimizer param groups.")
-                # allow lazy warning later
                 normed[name] = mask
                 continue
             if mask.dtype != torch.bool:
@@ -85,7 +84,7 @@ class MaskedAdamW(AdamW):
         pre_state_amsmax: Dict[int, torch.Tensor] = {}
 
         # Optionally zero grads on masked rows so moments don't pick them up
-        zero_grads = (self.freeze_state in ("decay", "full"))
+        zero_grads = (self.freeze_state in ("decay", "full", "zero"))
 
         for group in self.param_groups:
             for p in group["params"]:
@@ -97,8 +96,10 @@ class MaskedAdamW(AdamW):
                     continue
                 m = mask if mask.device == p.device else mask.to(p.device)
 
-                # Cache param rows (to undo AdamW update incl. weight decay)
-                pre_rows[id(p)] = p.data[m].clone()
+                # Cache param rows (to undo AdamW update incl. weight decay).
+                # For "zero" we don't need this cache, but keeping it is harmless.
+                if self.freeze_state != "zero":
+                    pre_rows[id(p)] = p.data[m].clone()
 
                 # Optionally freeze state completely: cache moments to restore later
                 if self.freeze_state == "full":
@@ -117,11 +118,11 @@ class MaskedAdamW(AdamW):
                         raise ValueError(f"Scalar param '{name}' cannot be row-masked.")
                     if g.is_sparse:
                         raise ValueError(f"Sparse grads not supported for masked row-wise AdamW on '{name}'.")
-                    g[m] = 0  # in-place; no need to rebind p.grad
+                    g[m] = 0  # in-place
 
         loss = super().step(closure=closure)
 
-        # Restore params (and possibly state) for masked rows
+        # Restore/modify params (and possibly state) for masked rows
         for group in self.param_groups:
             for p in group["params"]:
                 name = self._param_to_name.get(id(p))
@@ -132,10 +133,12 @@ class MaskedAdamW(AdamW):
                     continue
                 m = mask if mask.device == p.device else mask.to(p.device)
 
+                # Default behavior across modes (except "zero"): keep weights unchanged
                 cached = pre_rows.get(id(p))
                 if cached is not None:
-                    p.data[m] = cached  # keep weights unchanged
+                    p.data[m] = cached
 
+                # Full restore of optimizer moments
                 if self.freeze_state == "full":
                     st = self.state[p]
                     exp_avg = st.get("exp_avg", None)
@@ -147,5 +150,19 @@ class MaskedAdamW(AdamW):
                         exp_avg_sq[m] = pre_state_var[id(p)]
                     if ams_max is not None and id(p) in pre_state_amsmax:
                         ams_max[m] = pre_state_amsmax[id(p)]
+
+                # ZERO mode: set weights and moments to 0 for masked rows
+                if self.freeze_state == "zero":
+                    st = self.state[p]
+                    exp_avg = st.get("exp_avg", None)
+                    exp_avg_sq = st.get("exp_avg_sq", None)
+                    ams_max = st.get("max_exp_avg_sq", None)  # AMSGrad
+                    if exp_avg is not None:
+                        exp_avg[m].zero_()
+                    if exp_avg_sq is not None:
+                        exp_avg_sq[m].zero_()
+                    if ams_max is not None:
+                        ams_max[m].zero_()
+                    p.data[m].zero_()
 
         return loss

@@ -3,7 +3,7 @@ MODEL_NAME=roberta-base
 SEED=0
 SKIP_RATIO=0.0
 CHANGE_ITERS=1
-USE_LORA=false
+USE_LORA=true
 
 OUTPUT_BASE=/share/desa/nfs02/shouxu/cold/runs/glue/$TASK
 
@@ -17,6 +17,8 @@ else
     RUN_NAME=$MODEL_NAME-fp-seed$SEED
 fi
 
+# RUN_NAME="DEBUG"
+
 OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
 LOGGING_PATH=$OUTPUT_BASE/tensorboard_logs/$RUN_NAME
 
@@ -29,7 +31,7 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 32 \
     --dataloader_num_workers 0 \
-    --learning_rate 2e-5 \
+    --learning_rate 3e-4 \
     --num_train_epochs 3 \
     --logging_strategy steps \
     --logging_steps 100 \
@@ -42,7 +44,7 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
     --logging_dir $LOGGING_PATH \
-    --resume_from_checkpoint "/share/desa/nfs02/shouxu/cold/runs/glue/mnli/runs/roberta-base-fp-seed0/checkpoint-31500" \
+    --resume_from_checkpoint "/share/desa/nfs02/shouxu/cold/runs/glue/mnli/runs/roberta-base-lora--seed0/checkpoint-5000" \
     --overwrite_output_dir \
     --ddp_find_unused_parameters False \
     --fp16 \
@@ -50,6 +52,10 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --load_best_model_at_end True \
     --metric_for_best_model eval_loss \
     --greater_is_better false \
+    --train_adapter True \
+    --adapter_config lora \
+    
+    
 
     # | tee ./logs/$RUN_NAME.txt
 
@@ -57,9 +63,8 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     # --early_stopping True \
     # --early_stopping_patience 5 \
 
-    # --train_adapter True \
-    # --adapter_config lora \
-
+    # --max_steps 2000 \
+    # --my_debug \
 
 
 

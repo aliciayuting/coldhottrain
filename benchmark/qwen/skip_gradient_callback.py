@@ -82,9 +82,12 @@ class SkipGradientCallback(TrainerCallback):
         param_refs = []  # (name, rows)
         total_rows = 0
         for name, p in self.model.named_parameters():
+            
             #print(f"considering param {name} with shape {p.shape}")
             if p.ndim < 2 or self.layer_in_ignore_list(name):
+                #print(f"ignoring param {name} with shape {p.shape}")
                 continue
+            #print(f"including param {name} with shape {p.shape}")
             rows = p.shape[0]
             param_refs.append((name, rows))
             total_rows += rows

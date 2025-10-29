@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from transformers import HfArgumentParser, TrainingArguments
-# from transformers.adapters import AdapterArguments
+from adapters import AdapterArguments
 
 task_to_keys = {
     "cola": ("sentence", None),
@@ -348,8 +348,6 @@ class ColdNeuronArguments:
         default=1000, metadata={"help": "Change mask every these many iterations."}
     )
 
-    
-
 
 def get_args():
     """Parse all the args."""
@@ -358,7 +356,7 @@ def get_args():
             ModelArguments,
             DataTrainingArguments,
             TrainingArguments,
-            # AdapterArguments,
+            AdapterArguments,
             # FusionArguments,
             # TwoStageMTLArguments,
             ColdNeuronArguments

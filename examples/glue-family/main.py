@@ -106,7 +106,7 @@ def main() -> None:
         model_args,
         data_args,
         training_args,
-        # adapter_args,
+        adapter_args,
         # fusion_args,
         # mtl_args,
         coldneuron_args,
@@ -117,6 +117,7 @@ def main() -> None:
     # print("Model Arguments:", model_args)
     # print("Data Arguments:", data_args)
     # print("Training Arguments:", training_args)
+    # print("Adapter Arguments:", adapter_args)
     # print("ColdNeuron Arguments:", coldneuron_args)
 
     os.environ["WANDB_WATCH"] = "false"
@@ -188,6 +189,11 @@ def main() -> None:
 
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
+
+        print(f"Best model checkpoint: {trainer.state.best_model_checkpoint}")
+        print(f"Best metric value: {trainer.state.best_metric}")
+
+
         evaluate_fn(trainer, data_args, dataset)
 
     # kwargs = {

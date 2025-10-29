@@ -10,9 +10,15 @@ from transformers import (
     AutoModelForSequenceClassification,
     AutoModelForTokenClassification,
 )
-# from transformers.adapters import AutoAdapterModel
+from adapters import AutoAdapterModel
 
 from model.custom_module import LinearColWise
+
+from peft import LoraConfig, get_peft_model, TaskType as PeftTaskType
+from torchinfo import summary
+import logging
+
+logger = logging.getLogger(__name__)
 
 class TaskType(Enum):
     TOKEN_CLASSIFICATION = (1,)
@@ -28,6 +34,13 @@ AUTO_MODELS = {
     TaskType.MULTIPLE_CHOICE: AutoModelForMultipleChoice,
 }
 
+AUTO_PEFT_TASKS = {
+    TaskType.TOKEN_CLASSIFICATION: PeftTaskType.TOKEN_CLS,
+    TaskType.SEQUENCE_CLASSIFICATION: PeftTaskType.SEQ_CLS,
+    TaskType.QUESTION_ANSWERING: PeftTaskType.QUESTION_ANS,
+    TaskType.MULTIPLE_CHOICE: PeftTaskType.SEQ_CLS,
+}
+
 
 def get_model(
     args,
@@ -39,7 +52,7 @@ def get_model(
         model_args,
         data_args,
         training_args,
-        # adapter_args,
+        adapter_args,
         # fusion_args,
         # mtl_args,
         coldneuron_args,
@@ -47,17 +60,18 @@ def get_model(
 
     # if adapter_args.train_adapter:
     if False:
-        assert False
+        print("***** Using LoRA finetuning *****")
+
         # We use the AutoAdapterModel class here for better adapter support.
-        # model = AutoAdapterModel.from_pretrained(
-        #     model_args.model_name_or_path,
-        #     from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        #     config=config,
-        #     cache_dir=model_args.cache_dir,
-        #     revision=model_args.model_revision,
-        #     use_auth_token=True if model_args.use_auth_token else None,
-        #     ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
-        # )
+        model = AutoAdapterModel.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+        )
 
     else:
         model_class = AUTO_MODELS[task_type]
@@ -71,28 +85,49 @@ def get_model(
             ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
         )
 
+    # if coldneuron_args.use_lora:
+        # assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
+        # print("***** Using LoRA finetuning *****")
+        # peft_config = LoraConfig(
+        #     task_type=AUTO_PEFT_TASKS[task_type],
+        #     target_modules=["query", "value"], # TODO: make it configurable and generalizable for all models
+        #     modules_to_save=["classifier"],
+        #     r=coldneuron_args.lora_rank,
+        #     lora_alpha=coldneuron_args.lora_scaling_factor,
+        #     lora_dropout=0.05,
+        #     inference_mode=False,
+        # )
+        # model = get_peft_model(model, peft_config)
+
     bert_param = 0
-    if fix_bert:
-        if config.model_type == "bert":
-            for param in model.bert.parameters():
-                param.requires_grad = False
-            for _, param in model.bert.named_parameters():
-                bert_param += param.numel()
-        elif config.model_type == "roberta":
-            for param in model.roberta.parameters():
-                param.requires_grad = False
-            for _, param in model.roberta.named_parameters():
-                bert_param += param.numel()
-        elif config.model_type == "deberta":
-            for param in model.deberta.parameters():
-                param.requires_grad = False
-            for _, param in model.deberta.named_parameters():
-                bert_param += param.numel()
-    all_param = 0
-    for _, param in model.named_parameters():
-        all_param += param.numel()
-    total_param = all_param - bert_param
-    print("***** total param is {} *****".format(total_param))
+    # if fix_bert:
+    #     if config.model_type == "bert":
+    #         for param in model.bert.parameters():
+    #             param.requires_grad = False
+    #         for _, param in model.bert.named_parameters():
+    #             bert_param += param.numel()
+    #     elif config.model_type == "roberta":
+    #         for param in model.roberta.parameters():
+    #             param.requires_grad = False
+    #         for _, param in model.roberta.named_parameters():
+    #             bert_param += param.numel()
+    #     elif config.model_type == "deberta":
+    #         for param in model.deberta.parameters():
+    #             param.requires_grad = False
+    #         for _, param in model.deberta.named_parameters():
+    #             bert_param += param.numel()
+
+    # model.print_trainable_parameters() will print these info
+    # all_param = 0
+    # trainable_params = 0
+    # for name, param in model.named_parameters():
+    #     print(f"Param: {name}, Numel: {param.numel()}, Requires grad: {param.requires_grad}")
+    #     all_param += param.numel()
+    #     if param.requires_grad:
+    #         trainable_params += param.numel()
+    # total_param = all_param - bert_param
+    # print("***** total param is {} trainable param is {} *****".format(total_param, trainable_params))
+    # model.print_trainable_parameters()
     return model
 
 
@@ -141,6 +176,15 @@ def fix_linear_modules(
     # print("=" * 50)
     # print()
 
+    # fix all params
+    model.requires_grad_(False)
+
+    # for the classifier head, enable all grads
+    if hasattr(model, 'classifier'):
+        for name, param in model.classifier.named_parameters():
+            print(f"Unfreezing classifier param: {name}")
+            param.requires_grad = True
+
 
     if hasattr(model, 'encoder'):
         encoder = model.encoder
@@ -157,29 +201,38 @@ def fix_linear_modules(
     for layer_idx, layer in enumerate(encoder.layer):
         # Iterate through all modules in this layer
         for name, module in layer.named_modules():
-            if isinstance(module, nn.Linear):
-                # Get the parent module and attribute name
-                parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
-                attr_name = name.split('.')[-1]
+            # if layer_idx == 0:
+            #     print(f"Layer 0 module: {name}, type: {module.__class__.__name__}")
+            # if isinstance(module, nn.Linear):
+            if name.endswith("query") or name.endswith("value"):
+                # # Get the parent module and attribute name
+                # parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
+                # attr_name = name.split('.')[-1]
                 
-                # Get parent module
-                if parent_name:
-                    parent = layer
-                    for part in parent_name.split('.'):
-                        parent = getattr(parent, part)
-                else:
-                    parent = layer
+                # # Get parent module
+                # if parent_name:
+                #     parent = layer
+                #     for part in parent_name.split('.'):
+                #         parent = getattr(parent, part)
+                # else:
+                #     parent = layer
                 
-                out_features = module.out_features
+                # out_features = module.out_features
                 
-                # Replace the linear module
-                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
-                wrapped = replace_linear_with_colwise(module, hot_idx)
-                setattr(parent, attr_name, wrapped)
+                # # Replace the linear module
+                # hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
+                # wrapped = replace_linear_with_colwise(module, hot_idx)
+                # setattr(parent, attr_name, wrapped)
                 
-                # Track the replacement
-                full_name = f"encoder.layer.{layer_idx}.{name}"
+                # # Track the replacement
+                # full_name = f"encoder.layer.{layer_idx}.{name}"
                 # print(f"Replaced: {full_name}")
+
+                module.requires_grad = True
+                for pm, param in module.named_parameters():
+                    param.requires_grad = True
+                    print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
+
 
     encoder_layers = model.roberta.encoder.layer
     print(f"Number of encoder layers: {len(encoder_layers)}")
@@ -207,4 +260,8 @@ def fix_linear_modules(
         # Feed-forward network components
         print(f"  - Intermediate dense: {layer.intermediate.dense} input_features: {layer.intermediate.dense.in_features} output_features: {layer.intermediate.dense.out_features}")
         print(f"  - Output dense: {layer.output.dense} input_features: {layer.output.dense.in_features} output_features: {layer.output.dense.out_features}")
+
+    for name, param in model.named_parameters():
+        print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
+    logger.info(summary(model, depth=5))
 

@@ -44,8 +44,8 @@ VALIDATION_FRACTION = 0.1     # Hold out 10% for validation
 
 
 MODE="random"
-RANDOM_HOT_K_PERCENT = 1.0    
-CHANGE_RANDOM_EVERY_ITERS = 0
+RANDOM_HOT_K_PERCENT = 0.2    
+CHANGE_RANDOM_EVERY_ITERS = 100
 
 # output_dir = f"/pscratch/sd/l/lsx/runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}"
 output_dir = f"{SCRATCH}/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -155,6 +155,7 @@ opt_kwargs = {
     "named_parameters": dict(model.named_parameters()),
     "freeze_state": "none",  # or "decay" or "full" per your preference
     "lr": 2e-5,
+    "fused": True
 }
 
 trainer = Trainer(
