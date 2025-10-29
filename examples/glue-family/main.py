@@ -67,10 +67,66 @@ def train_fn(trainer, training_args, last_checkpoint=None):
     trainer.save_state()
     
     
+# def evaluate_fn(trainer, data_args, dataset):
+#     # Loop to handle MNLI double evaluation (matched, mis-matched)
+#     tasks = [data_args.task_name]
+#     test_datasets = [dataset.test_dataset]
+#     if data_args.task_name == "mnli":
+#         tasks.append("mnli-mm")
+#         valid_mm_dataset = dataset.test_dataset_mm
+#         if data_args.max_eval_samples is not None:
+#             max_eval_samples = min(len(valid_mm_dataset), data_args.max_eval_samples)
+#             valid_mm_dataset = valid_mm_dataset.select(range(max_eval_samples))
+#         test_datasets.append(valid_mm_dataset)
+#         combined = {}
+
+#     for ds, task in zip(test_datasets, tasks):
+#         metrics = trainer.evaluate(eval_dataset=ds, metric_key_prefix="test")
+
+#         max_eval_samples = (
+#             data_args.max_eval_samples
+#             if data_args.max_eval_samples is not None
+#             else len(ds)
+#         )
+#         metrics["test_samples"] = min(max_eval_samples, len(ds))
+
+#         if task == "mnli-mm":
+#             metrics = {k + "_mm": v for k, v in metrics.items()}
+#         if task is not None and "mnli" in task:
+#             combined.update(metrics)
+
+#         trainer.log_metrics("test", metrics)
+#         trainer.save_metrics(
+#             "test", combined if task is not None and "mnli" in task else metrics
+#         )
 def evaluate_fn(trainer, data_args, dataset):
-    # Loop to handle MNLI double evaluation (matched, mis-matched)
+    # Remove early stopping callback to avoid warnings
+    from transformers import EarlyStoppingCallback
+    trainer.callback_handler.remove_callback(EarlyStoppingCallback)
+    
+    # ==================== VALIDATION SET EVALUATION ====================
+    # This is the 10% held-out from training data
+    logger.info("*** Evaluate on Validation Set (held-out from train) ***")
+    
+    eval_metrics = trainer.evaluate(eval_dataset=dataset.eval_dataset, metric_key_prefix="eval")
+    
+    max_eval_samples = (
+        data_args.max_eval_samples
+        if data_args.max_eval_samples is not None
+        else len(dataset.eval_dataset)
+    )
+    eval_metrics["eval_samples"] = min(max_eval_samples, len(dataset.eval_dataset))
+    
+    trainer.log_metrics("eval", eval_metrics)
+    trainer.save_metrics("eval", eval_metrics)
+    
+    # ==================== TEST SET EVALUATION ====================
+    # This is the official GLUE validation split
+    logger.info("*** Evaluate on Test Set (GLUE validation split) ***")
+    
     tasks = [data_args.task_name]
     test_datasets = [dataset.test_dataset]
+    
     if data_args.task_name == "mnli":
         tasks.append("mnli-mm")
         valid_mm_dataset = dataset.test_dataset_mm
@@ -79,6 +135,7 @@ def evaluate_fn(trainer, data_args, dataset):
             valid_mm_dataset = valid_mm_dataset.select(range(max_eval_samples))
         test_datasets.append(valid_mm_dataset)
         combined = {}
+
 
     for ds, task in zip(test_datasets, tasks):
         metrics = trainer.evaluate(eval_dataset=ds, metric_key_prefix="test")

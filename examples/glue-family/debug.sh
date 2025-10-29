@@ -33,16 +33,17 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --learning_rate 2e-5 \
     --num_train_epochs 5 \
     --logging_strategy steps \
-    --logging_steps 1 \
+    --logging_steps 100 \
     --save_strategy steps \
-    --save_steps 500 \
+    --save_steps 100 \
     --save_total_limit 3 \
     --eval_strategy steps \
-    --eval_steps 500 \
+    --eval_steps 100 \
     --early_stopping True \
-    --early_stopping_patience 5 \
+    --early_stopping_patience 2 \
     --load_best_model_at_end True \
     --metric_for_best_model eval_loss \
+    --greater_is_better False \
     --seed $SEED \
     --report_to tensorboard \
     --output_dir $OUTPUT_PATH \
@@ -51,11 +52,10 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --ddp_find_unused_parameters False \
     --fp16 \
     --gradient_checkpointing True \
-    --train_adapter True \
-    --adapter_config lora \
-    --max_steps 2 \
+    --train_adapter False \
     | tee ./logs/$RUN_NAME.txt
-
+#    --max_steps 5 \
+# --adapter_config lora \
 
 
     # --skip_ratio $SKIP_RATIO \
