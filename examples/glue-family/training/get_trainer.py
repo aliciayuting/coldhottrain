@@ -179,25 +179,25 @@ def get_trainer(args):
         ]
     else:
         early_stopping_callback = []
-
-    # for name, param in model.named_parameters():
-    #     if (("query" in name or "value" in name) and 'lora' in name) or "classifier" in name:
-    #         param.requires_grad = True
-    #     else:
-    #         param.requires_grad = False
-    for name, param in model.named_parameters():
-        print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
-    logger.info(summary(model, depth=5))
     
 
 
     if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
         print(f"***** using colwise with ratio {coldneuron_args.skip_ratio} *****")
+        model.enable_input_require_grads()
         total_buffers = sum(b.numel() for b in model.buffers())
         print(f"Total buffers before adding linearcolwise: {total_buffers}")
         fix_linear_modules(model, config, coldneuron_args.skip_ratio)
         after_total_buffers = sum(b.numel() for b in model.buffers())
         print(f"Total buffers after adding linearcolwise: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
+
+        
+
+
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
 
 
     if coldneuron_args.use_masked_skipgradient:
@@ -205,8 +205,6 @@ def get_trainer(args):
         for name, param in model.named_parameters():
             if not ("query" in name or "value" in name or "classifier" in name):
                 param.requires_grad = False
-
-            print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
 
         # # from torch.optim import AdamW
         # optimizer = MaskedAdamW(
@@ -277,8 +275,7 @@ def get_trainer(args):
         #         # if k != "params":
         #         print(f"  {k}: {v}")
 
-        print("***** using standard trainer *****" \
-        "")
+
         if adapter_args.train_adapter:
             model.can_return_loss = True
 
@@ -312,9 +309,11 @@ def get_trainer(args):
 
         trainer.create_optimizer_and_scheduler(num_training_steps=33135)
 
+
     
-    # vram_breakdown_callback = VramBreakdownCallback()
-    # trainer.add_callback(vram_breakdown_callback)
+
+    vram_breakdown_callback = VramBreakdownCallback()
+    trainer.add_callback(vram_breakdown_callback)
 
     opt = trainer.optimizer
     print(f"optimizer type: {type(opt)}")

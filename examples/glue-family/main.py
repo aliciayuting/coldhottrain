@@ -215,7 +215,7 @@ def main() -> None:
     #     elif not mtl_args.scalearn_type:
     #         model.save_adapter(training_args.output_dir, data_args.task_name)
 
-    if training_args.do_eval:
+    if training_args.do_eval and coldneuron_args.cold_do_eval:
         logger.info("*** Evaluate ***")
 
         print(f"Best model checkpoint: {trainer.state.best_model_checkpoint}")

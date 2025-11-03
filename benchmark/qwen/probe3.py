@@ -79,6 +79,13 @@ class VramBreakdownCallback(TrainerCallback):
 
         if model is None:
             return
+        
+
+        for name, param in model.named_parameters():
+            if param.grad is None:
+                print(f"No gradient for {name}")
+            else:
+                print(f"Gradient for {name}: {param.grad.norm()}")
 
         # Compute sizes
         params_bytes = model_param_nbytes(model)

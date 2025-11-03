@@ -169,24 +169,6 @@ def fix_linear_modules(
         print(f"{model.__class__.__name__} not supported for linear module printing.")
         return
     
-    # print()
-    # print("=" * 50)
-    # print("Linear modules in the model type: ", config.model_type)
-    # for name, module in model.named_modules():
-    #     if isinstance(module, nn.Linear):
-    #         # linear_modules.append((name, module))
-    #         print(f"{name}: {module.in_features} -> {module.out_features}")
-    # print("=" * 50)
-    # print()
-        
-
-    # for the classifier head, enable all grads
-    if hasattr(model, 'classifier'):
-        for name, param in model.classifier.named_parameters():
-            print(f"Unfreezing classifier param: {name}")
-            param.requires_grad = True
-
-
     if hasattr(model, 'encoder'):
         encoder = model.encoder
     elif hasattr(model, 'roberta'):
@@ -197,14 +179,24 @@ def fix_linear_modules(
         encoder = model.model.encoder
     else:
         raise AttributeError("Could not find encoder in model")
-    
+
+    for name, module in model.named_modules():
+        module.requires_grad = False
+        for pm, param in module.named_parameters():
+            param.requires_grad = False
+
+    for name, module in model.named_modules():
+        if "classifier" in name:
+            module.requires_grad = True
+            for pm, param in module.named_parameters():
+                param.requires_grad = True  
+
     # Iterate through each encoder layer
     for layer_idx, layer in enumerate(encoder.layer):
         # Iterate through all modules in this layer
         for name, module in layer.named_modules():
             # if layer_idx == 0:
             #     print(f"Layer 0 module: {name}, type: {module.__class__.__name__}")
-            # if isinstance(module, nn.Linear):
             if name.endswith("query") or name.endswith("value"):
                 # # Get the parent module and attribute name
                 parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
@@ -232,37 +224,38 @@ def fix_linear_modules(
                 module.requires_grad = True
                 for pm, param in module.named_parameters():
                     param.requires_grad = True
-                    print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
+                    # print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
 
 
-    encoder_layers = model.roberta.encoder.layer
-    print(f"Number of encoder layers: {len(encoder_layers)}")
 
-    # Method 2: Iterate through each layer
-    for idx, layer in enumerate(encoder_layers):
-        if idx > 0:
-            break
-        print(f"\n--- Layer {idx} ---")
-        print(f"Self-attention: {layer.attention}")
-        print(f"Intermediate (FFN): {layer.intermediate}")
-        print(f"Output: {layer.output}")
+    # encoder_layers = model.roberta.encoder.layer
+    # print(f"Number of encoder layers: {len(encoder_layers)}")
 
-    # Method 3: Access specific components within each layer
-    for idx, layer in enumerate(encoder_layers):
-        if idx > 0:
-            break
-        print(f"\nLayer {idx} components:")
-        # Self-attention components
-        print(f"  - Query: {layer.attention.self.query} input_features: {layer.attention.self.query.in_features} output_features: {layer.attention.self.query.out_features}")
-        print(f"  - Key: {layer.attention.self.key} input_features: {layer.attention.self.key.in_features} output_features: {layer.attention.self.key.out_features}")
-        print(f"  - Value: {layer.attention.self.value} input_features: {layer.attention.self.value.in_features} output_features: {layer.attention.self.value.out_features}")
-        print(f"  - Attention output dense: {layer.attention.output.dense} input_features: {layer.attention.output.dense.in_features} output_features: {layer.attention.output.dense.out_features}")
+    # # Method 2: Iterate through each layer
+    # for idx, layer in enumerate(encoder_layers):
+    #     if idx > 0:
+    #         break
+    #     print(f"\n--- Layer {idx} ---")
+    #     print(f"Self-attention: {layer.attention}")
+    #     print(f"Intermediate (FFN): {layer.intermediate}")
+    #     print(f"Output: {layer.output}")
 
-        # Feed-forward network components
-        print(f"  - Intermediate dense: {layer.intermediate.dense} input_features: {layer.intermediate.dense.in_features} output_features: {layer.intermediate.dense.out_features}")
-        print(f"  - Output dense: {layer.output.dense} input_features: {layer.output.dense.in_features} output_features: {layer.output.dense.out_features}")
+    # # Method 3: Access specific components within each layer
+    # for idx, layer in enumerate(encoder_layers):
+    #     if idx > 0:
+    #         break
+    #     print(f"\nLayer {idx} components:")
+    #     # Self-attention components
+    #     print(f"  - Query: {layer.attention.self.query} input_features: {layer.attention.self.query.in_features} output_features: {layer.attention.self.query.out_features}")
+    #     print(f"  - Key: {layer.attention.self.key} input_features: {layer.attention.self.key.in_features} output_features: {layer.attention.self.key.out_features}")
+    #     print(f"  - Value: {layer.attention.self.value} input_features: {layer.attention.self.value.in_features} output_features: {layer.attention.self.value.out_features}")
+    #     print(f"  - Attention output dense: {layer.attention.output.dense} input_features: {layer.attention.output.dense.in_features} output_features: {layer.attention.output.dense.out_features}")
 
-    for name, param in model.named_parameters():
-        print(f"Param: {name} Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
-    logger.info(summary(model, depth=5))
+    #     # Feed-forward network components
+    #     print(f"  - Intermediate dense: {layer.intermediate.dense} input_features: {layer.intermediate.dense.in_features} output_features: {layer.intermediate.dense.out_features}")
+    #     print(f"  - Output dense: {layer.output.dense} input_features: {layer.output.dense.in_features} output_features: {layer.output.dense.out_features}")
+
+    # for name, param in model.named_parameters():
+    #     print(f"Param: {name} Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
+    # logger.info(summary(model, depth=5))
 
