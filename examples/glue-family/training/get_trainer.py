@@ -23,11 +23,15 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../benchmark/qwen/")))
 from custom_adam import MaskedAdamW
 from skip_gradient_callback import SkipGradientCallback
-from probe2 import VramBreakdownCallback
+# from probe2 import VramBreakdownCallback
+from probe3 import VramBreakdownCallback
 from model.utils import fix_linear_modules
 # from transformers.adapters.configuration import AdapterConfig, PfeifferConfig
 from adapters.training import setup_adapter_training
 import adapters
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import LinearLR
+from transformers import get_linear_schedule_with_warmup
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +108,8 @@ def get_trainer(args):
     # config lora using adapters lib
     if adapter_args.train_adapter:
         assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
-        ''' Use adapter auto model, add head manually '''
+        # print("***** Using Adapters LoRA finetuning *****")
+        # ''' Use adapter auto model, add head manually '''
         # if dataset.multiple_choice:
         #     model.add_multiple_choice_head(data_args.task_name, num_choices=2)
         # else:
@@ -124,14 +129,13 @@ def get_trainer(args):
         #         multilabel=multi_label,
         #     )
 
-        ''' Use huggingface model directly, setup adapter training '''
-        adapters.init(model)
-
-        
+        # ''' Use huggingface model directly, setup adapter training '''
+        # adapters.init(model)
 
         # Setup adapters
         # if not data_args.omega_grid:
-        if True:
+        # if True:
+        if False:
             setup_adapter_training(
                 model,
                 adapter_args,
@@ -140,7 +144,7 @@ def get_trainer(args):
                 adapter_config_kwargs={
                     "sparsity": model_args.sparsity,
                     "share_adapter": model_args.share_adapter,
-                    "r": 32,
+                    # "r": 32,
                     "alpha": 64,
                 },
             )
@@ -150,19 +154,16 @@ def get_trainer(args):
             #     adapter_config = model.get_adapters_config(adapter_name)
             #     print(f"Adapter config for {adapter_name}: {adapter_config}")
 
- 
 
-    param_optimizer = list(model.named_parameters())
-    logger.info("Trainable parameters:")
-    for n, p in param_optimizer:
-        if p.requires_grad:
-            logger.info(f"{n}")
 
-    trainer_cls = (
-        AdapterTrainer
-        if (adapter_args.train_adapter)
-        else Trainer
-    )
+    # trainer_cls = (
+    #     AdapterTrainer
+    #     if (adapter_args.train_adapter)
+    #     else Trainer
+    # )
+
+
+    trainer_cls = Trainer
     
 
     # early stopping
@@ -187,10 +188,16 @@ def get_trainer(args):
     for name, param in model.named_parameters():
         print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
     logger.info(summary(model, depth=5))
+    
 
-    # if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient and not adapter_args.train_adapter:
-    #     print(f"***** using skipgradient with ratio {coldneuron_args.skip_ratio} *****")
-    #     fix_linear_modules(model, config, coldneuron_args.skip_ratio)
+
+    if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
+        print(f"***** using colwise with ratio {coldneuron_args.skip_ratio} *****")
+        total_buffers = sum(b.numel() for b in model.buffers())
+        print(f"Total buffers before adding linearcolwise: {total_buffers}")
+        fix_linear_modules(model, config, coldneuron_args.skip_ratio)
+        after_total_buffers = sum(b.numel() for b in model.buffers())
+        print(f"Total buffers after adding linearcolwise: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
 
 
     if coldneuron_args.use_masked_skipgradient:
@@ -235,6 +242,62 @@ def get_trainer(args):
         trainer.create_optimizer()
         trainer.add_callback(skipgradient_cb)
     else:
+        # optimizer = AdamW(
+        #     filter(lambda p: p.requires_grad, model.parameters()), 
+        #     lr=training_args.learning_rate,
+        #     eps=training_args.adam_epsilon,
+        #     weight_decay=training_args.weight_decay,
+
+        # )
+
+        # lr_scheduler = trainer_cls.get_lr_scheduler(
+        #     training_args.lr_scheduler_type,
+        #     optimizer=optimizer,
+        #     num_warmup_steps=training_args.get_warmup_steps(),
+        #     num_training_steps=trainer_cls.get_train_steps(
+        #         training_args,
+        #         trainer_cls.get_train_dataloader(
+        #             trainer_cls(
+        #                 model=model,
+        #                 args=training_args,
+        #                 train_dataset=dataset.train_dataset
+        #                 if training_args.do_train
+        #                 else None,
+        #             )
+        #         ),
+        #     ),
+        # )
+
+        # print(f"len of filtered parameters: {len(list(filter(lambda p: p.requires_grad, model.parameters())))}")
+
+        # print optimizer name
+        # for param_group in optimizer.param_groups:
+        #     print("Optimizer param group:")
+        #     for k, v in param_group.items():
+        #         # if k != "params":
+        #         print(f"  {k}: {v}")
+
+        print("***** using standard trainer *****" \
+        "")
+        if adapter_args.train_adapter:
+            model.can_return_loss = True
+
+        # optim = AdamW(
+        #     filter(lambda p: p.requires_grad, model.parameters()),
+        #     lr=training_args.learning_rate,
+        #     eps=training_args.adam_epsilon,
+        #     weight_decay=training_args.weight_decay,
+        #     betas=(training_args.adam_beta1, training_args.adam_beta2),
+        # )
+
+
+        # lr_scheduler = get_linear_schedule_with_warmup(
+        #     optim,
+        #     num_warmup_steps=0,
+        #     num_training_steps=33135,
+        # )
+
+
         trainer = trainer_cls(
             model=model,
             args=training_args,
@@ -244,15 +307,17 @@ def get_trainer(args):
             tokenizer=tokenizer,
             data_collator=dataset.data_collator,
             callbacks=early_stopping_callback,
-            # optimizers=(optimizer, None),
+            # optimizers=( optim, lr_scheduler),
         )
-        trainer.create_optimizer()
+
+        trainer.create_optimizer_and_scheduler(num_training_steps=33135)
 
     
-    vram_breakdown_callback = VramBreakdownCallback()
-    trainer.add_callback(vram_breakdown_callback)
+    # vram_breakdown_callback = VramBreakdownCallback()
+    # trainer.add_callback(vram_breakdown_callback)
 
     opt = trainer.optimizer
+    print(f"optimizer type: {type(opt)}")
     for i, g in enumerate(opt.param_groups):
         print(f"Group {i}:")
         for k, v in g.items():

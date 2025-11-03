@@ -16,6 +16,11 @@ from transformers.utils.versions import require_version
 from model.utils import fix_linear_modules
 import torch.distributed as dist
 
+import torch
+from pytorch_memlab import MemReporter
+from torch.profiler import profile, ProfilerActivity, record_function
+
+
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
         try:
@@ -112,6 +117,8 @@ def main() -> None:
         coldneuron_args,
     ) = args
 
+    # torch.cuda.memory._record_memory_history()
+
 
     # print out args
     print("Model Arguments:", model_args)
@@ -156,18 +163,39 @@ def main() -> None:
     # for m in model.modules():
     #     print(type(m), m)
     #exit(0)
+
     if coldneuron_args.my_debug:
         print("***** Debug Mode Activated *****")
         return
 
+
+    
+
     if training_args.do_train:
         # Log a few random samples from the training set:
         for index in random.sample(range(len(dataset.train_dataset)), 3):
-            logger.info(
+            print(
                 f"Sample {index} of the training set: {dataset.train_dataset[index]}."
             )
 
+        # with profile(
+        #     activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        #     profile_memory=True,  # Key parameter!
+        #     record_shapes=True,
+        #     with_stack=True
+        # ) as prof:
         train_fn(trainer, training_args, last_checkpoint)
+
+
+        # prof.export_chrome_trace("./output/memory_snapshot/trace.json")
+
+        # print(prof.key_averages().table(sort_by="self_cuda_mem", row_limit=10))
+
+
+        # reporter = MemReporter(model)
+        # reporter.report()
+
+    # torch.cuda.memory._dump_snapshot("./output/memory_snapshot/test.pickle")
 
     # # save adapter
     # if fusion_args.train_fusion and not fusion_args.fusion_type == "soup":

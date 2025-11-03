@@ -85,19 +85,21 @@ def get_model(
             ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
         )
 
-    # if coldneuron_args.use_lora:
-        # assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
-        # print("***** Using LoRA finetuning *****")
-        # peft_config = LoraConfig(
-        #     task_type=AUTO_PEFT_TASKS[task_type],
-        #     target_modules=["query", "value"], # TODO: make it configurable and generalizable for all models
-        #     modules_to_save=["classifier"],
-        #     r=coldneuron_args.lora_rank,
-        #     lora_alpha=coldneuron_args.lora_scaling_factor,
-        #     lora_dropout=0.05,
-        #     inference_mode=False,
-        # )
-        # model = get_peft_model(model, peft_config)
+    if adapter_args.train_adapter:
+        assert coldneuron_args.skip_ratio == 0 and not coldneuron_args.use_masked_skipgradient, "Cannot use both LoRA and ColdNeurons at the same time."
+        print("***** Using LoRA finetuning *****")
+        model.enable_input_require_grads()
+        peft_config = LoraConfig(
+            task_type=AUTO_PEFT_TASKS[task_type],
+            target_modules=["query", "value"], # TODO: make it configurable and generalizable for all models
+            modules_to_save=["classifier"],
+            r=32,
+            lora_alpha=64,
+            lora_dropout=0.05,
+            bias="none",
+            inference_mode=False,
+        )
+        model = get_peft_model(model, peft_config)
 
     bert_param = 0
     # if fix_bert:
@@ -149,6 +151,8 @@ def make_hot_idx(out_features: int, frac: float | None = None, idx: torch.Tensor
 def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> LinearColWise:
     assert isinstance(mod, nn.Linear)
     hot_idx = hot_idx.to(mod.weight.device)
+    # wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode="1linear_efficient")
+    # print(f"Replaced Linear with LinearColWise: dtype: {mod.weight.dtype}")
     wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode="1linear")
     wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
     return wrapped
@@ -159,8 +163,6 @@ def fix_linear_modules(
     config: AutoConfig.from_pretrained,
     skip_ratio: float = 0,
 ):
-    assert False, "Disabled for now."
-
     print(f"Architecture: {config.architectures}, Type: {config.model_type}, Name: {model.__class__.__name__}")
 
     if model.__class__.__name__ not in ["RobertaForSequenceClassification"]:
@@ -176,9 +178,7 @@ def fix_linear_modules(
     #         print(f"{name}: {module.in_features} -> {module.out_features}")
     # print("=" * 50)
     # print()
-
-    # fix all params
-    model.requires_grad_(False)
+        
 
     # for the classifier head, enable all grads
     if hasattr(model, 'classifier'):
@@ -207,23 +207,23 @@ def fix_linear_modules(
             # if isinstance(module, nn.Linear):
             if name.endswith("query") or name.endswith("value"):
                 # # Get the parent module and attribute name
-                # parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
-                # attr_name = name.split('.')[-1]
+                parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
+                attr_name = name.split('.')[-1]
                 
-                # # Get parent module
-                # if parent_name:
-                #     parent = layer
-                #     for part in parent_name.split('.'):
-                #         parent = getattr(parent, part)
-                # else:
-                #     parent = layer
+                # Get parent module
+                if parent_name:
+                    parent = layer
+                    for part in parent_name.split('.'):
+                        parent = getattr(parent, part)
+                else:
+                    parent = layer
                 
-                # out_features = module.out_features
+                out_features = module.out_features
                 
-                # # Replace the linear module
-                # hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
-                # wrapped = replace_linear_with_colwise(module, hot_idx)
-                # setattr(parent, attr_name, wrapped)
+                # Replace the linear module
+                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
+                wrapped = replace_linear_with_colwise(module, hot_idx)
+                setattr(parent, attr_name, wrapped)
                 
                 # # Track the replacement
                 # full_name = f"encoder.layer.{layer_idx}.{name}"
@@ -263,6 +263,6 @@ def fix_linear_modules(
         print(f"  - Output dense: {layer.output.dense} input_features: {layer.output.dense.in_features} output_features: {layer.output.dense.out_features}")
 
     for name, param in model.named_parameters():
-        print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
+        print(f"Param: {name} Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
     logger.info(summary(model, depth=5))
 

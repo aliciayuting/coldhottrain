@@ -348,6 +348,16 @@ class ColdNeuronArguments:
         default=1000, metadata={"help": "Change mask every these many iterations."}
     )
 
+    cold_do_train: bool = field(
+        default=True, metadata={"help": "Whether to do training."}
+    )
+
+    cold_do_eval: bool = field(
+        default=True, metadata={"help": "Whether to do evaluation."}
+    )
+
+
+
 
 def get_args():
     """Parse all the args."""
