@@ -28,8 +28,32 @@ from model.utils import fix_linear_modules
 # from transformers.adapters.configuration import AdapterConfig, PfeifferConfig
 from adapters.training import setup_adapter_training
 import adapters
+from adapters.wrappers.interfaces import get_adapter_interface
+from adapters import AdapterModelInterface
+from adapters import LoRAConfig
+
 
 logger = logging.getLogger(__name__)
+
+
+ROBERTA_INTERFACE = AdapterModelInterface(
+    adapter_methods=[ "lora"],
+    model_embeddings="embeddings",
+    model_layers="encoder.layer",
+    layer_self_attn="attention",
+    layer_cross_attn=None,
+    attn_q_proj="self.query",
+    attn_k_proj="self.key",
+    attn_v_proj="self.value",
+    attn_o_proj="output.dense",
+    layer_intermediate_proj="intermediate.dense",
+    layer_output_proj="output.dense",
+    layer_pre_self_attn=None,
+    layer_pre_cross_attn=None,
+    layer_pre_ffn=None,
+    layer_ln_1="attention.output.LayerNorm",
+    layer_ln_2="output.LayerNorm",
+)
 
 
 def get_trainer(args):
@@ -124,33 +148,76 @@ def get_trainer(args):
         #         multilabel=multi_label,
         #     )
 
+        # model.base_model.prefix_tuning = False
+        # print("disabled support_prompt_tuning")
         ''' Use huggingface model directly, setup adapter training '''
-        adapters.init(model)
 
+        # print(f"roberta_interface none: {roberta_interface is None}")
+        adapters.init(model, interface=ROBERTA_INTERFACE)
+        # adapters.init(model)
+        print("~~~~~~~  Initialized adapters with RoBERTa interface.  ~~~~~~~")
+        
         
 
         # Setup adapters
         # if not data_args.omega_grid:
         if True:
-            setup_adapter_training(
-                model,
-                adapter_args,
-                data_args.task_name,
-                # for propetl
-                adapter_config_kwargs={
-                    "sparsity": model_args.sparsity,
-                    "share_adapter": model_args.share_adapter,
-                    "r": 32,
-                    "alpha": 64,
-                },
-            )
+            # setup_adapter_training(
+            #     model,
+            #     adapter_args,
+            #     data_args.task_name,
+            #     # for propetl
+            #     adapter_config_kwargs={
+            #         "sparsity": model_args.sparsity,
+            #         "share_adapter": model_args.share_adapter,
+            #         "r": 32,
+            #         "alpha": 64,
+            #     },
+            # )
 
             # # print the lora config
             # for adapter_name in model.active_adapters:
             #     adapter_config = model.get_adapters_config(adapter_name)
             #     print(f"Adapter config for {adapter_name}: {adapter_config}")
 
- 
+            # adapter_config = LoRAConfig(
+            #     r=32,
+            #     alpha=64,
+            #     dropout=0.1,
+            #     # Add these if you're using them:
+            #     # init_weights="bert",
+            # )
+            
+            # # Add the adapter
+            # model.add_adapter(
+            #     data_args.task_name,
+            #     config=adapter_config,
+            #     set_active=True  # ← THIS IS KEY!
+            # )
+            adapter_config = LoRAConfig(
+                r=32,
+                alpha=64,
+                dropout=0.1,
+                # Add these if you're using them:
+                # init_weights="bert",
+            )
+            
+            # Add the adapter
+            model.add_adapter(
+                data_args.task_name,
+                config=adapter_config,
+                set_active=True  # ← THIS IS KEY!
+            )
+            
+            # Train the adapter (this freezes the base model and activates adapters)
+            model.train_adapter(data_args.task_name)
+            
+            # CRITICAL: Verify activation
+            print(f"✓ Active adapters: {model.active_adapters}")
+            print(f"✓ Adapter setup: {model.adapters_config.active_setup}")
+            
+            if model.active_adapters is None:
+                raise RuntimeError("FAILED TO ACTIVATE ADAPTERS!")
 
     param_optimizer = list(model.named_parameters())
     logger.info("Trainable parameters:")
@@ -185,6 +252,7 @@ def get_trainer(args):
     #     else:
     #         param.requires_grad = False
     for name, param in model.named_parameters():
+        # if param.requires_grad:
         print(f"Param: {name}, Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
     logger.info(summary(model, depth=5))
 
