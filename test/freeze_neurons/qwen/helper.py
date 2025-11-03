@@ -1,3 +1,4 @@
+from typing import Optional
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPadding, TrainingArguments, Trainer, DataCollatorForLanguageModeling, AutoModelForSequenceClassification
 
 # import torch.nn
@@ -6,7 +7,7 @@ import torch.nn as nn
 import torch.distributed as dist
 import hashlib
 from module import EmbeddingColWise, LinearColWise
-
+from linear_elementwise import LinearElementwise
 
 def get_decoder_layers(m: nn.Module):
     """
@@ -65,6 +66,83 @@ def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor, mode: str
     wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode=mode)
     wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
     return wrapped
+
+def replace_linear_with_elementwise_hotidx(mod: nn.Linear, hot_rows: torch.Tensor) -> "LinearElementwise":
+    device = hot_rows.device
+
+    # If no rows are hot, return empty indices in the right shape/dtype
+    if hot_rows.numel() == 0:
+        raise ValueError("hot_rows must contain at least one index")
+        w_idx = torch.empty(0, 2, dtype=torch.long, device=device)
+        b_idx = torch.empty(0, dtype=torch.long, device=device)
+    else:
+        # Build all (row, col) pairs for those rows
+        cols = torch.arange(mod.in_features, device=device, dtype=torch.long)
+        # meshgrid gives two [#hot, in_features] grids; stack -> [..., 2] then flatten
+        R, C = torch.meshgrid(hot_rows, cols, indexing="ij")  # PyTorch >=1.10
+        w_idx = torch.stack((R.reshape(-1), C.reshape(-1)), dim=1).contiguous()
+
+        # Bias indices are just the hot rows themselves
+        b_idx = hot_rows.contiguous()
+
+    le = LinearElementwise.from_linear(
+        mod,
+        train_weight_indices=w_idx,
+        train_bias_indices=b_idx,
+        )
+    return le.to(device=mod.weight.device, dtype=mod.weight.dtype)
+
+
+def replace_linear_with_elementwise_random(mod: nn.Module, percent_hot: float) -> "LinearElementwise":
+    """
+    Wrap an nn.Linear in a LinearElementwise with a random subset of weights/biases trainable.
+
+    Args:
+        mod: nn.Linear to convert.
+        percent_hot: fraction in [0, 1] of weights and biases to mark trainable.
+
+    Returns:
+        LinearElementwise initialized from `mod` via LinearElementwise.from_linear(...)
+    """
+    if not isinstance(mod, nn.Linear):
+        raise TypeError("mod must be an nn.Linear")
+    if not (0.0 <= percent_hot <= 1.0):
+        raise ValueError("percent_hot must be in [0, 1]")
+
+    out_features, in_features = mod.out_features, mod.in_features
+
+    # ----- pick trainable WEIGHT indices -----
+    num_w = out_features * in_features
+    k_w = int(round(percent_hot * num_w))
+    if percent_hot > 0.0 and k_w == 0:
+        k_w = 1  # ensure at least one when percent_hot > 0
+
+    if k_w > 0:
+        flat = torch.randperm(num_w, device="cpu")[:k_w]      # unique linear indices
+        w_row = (flat // in_features).long()
+        w_col = (flat %  in_features).long()
+        train_weight_indices = torch.stack([w_row, w_col], dim=1)  # [k_w, 2]
+    else:
+        train_weight_indices = torch.empty(0, 2, dtype=torch.long)
+
+    # ----- pick trainable BIAS indices -----
+    num_b = out_features
+    k_b = int(round(percent_hot * num_b))
+    if percent_hot > 0.0 and k_b == 0:
+        k_b = 1
+
+    train_bias_indices: Optional[torch.Tensor]
+    if k_b > 0:
+        train_bias_indices = torch.randperm(num_b, device="cpu")[:k_b].long()  # [k_b]
+    else:
+        train_bias_indices = None  # no trainable bias entries
+
+    # ----- build via the convenience constructor -----
+    return LinearElementwise.from_linear(
+        base=mod,
+        train_weight_indices=train_weight_indices,
+        train_bias_indices=train_bias_indices,
+    )
 
 def replace_embedding_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> EmbeddingColWise:
     assert isinstance(mod, nn.Embedding)

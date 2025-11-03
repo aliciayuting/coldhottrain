@@ -16,7 +16,7 @@ import os
 import numpy as np
 from iteration_time_callback import IterationTimeCallback
 from hotswap import HotSwapCallback
-
+from linear_elementwise import LinearElementwise
 from module import *
 from helper import *
 
@@ -67,7 +67,7 @@ RANDOM_HOT_K_PERCENT = 0.2
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 
-
+ELEMENTWISE_LINEAR = True  # whether to use elementwise linear or not
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
@@ -96,7 +96,7 @@ def tokenize_function_mnli(example):
         f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
         padding="max_length",
         truncation=True,
-        max_length=512
+        max_length=128
     )
 
 
@@ -247,7 +247,7 @@ if __name__ == "__main__":
         bf16=True,
         logging_steps=logging_steps,
         save_strategy="steps",
-        save_steps=25,
+        save_steps=500,
         # save_strategy="no",
         eval_strategy="steps",
         eval_steps=eval_steps,
@@ -322,7 +322,12 @@ if __name__ == "__main__":
                 out_features = linear.out_features
                 # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
                 hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
-                wrapped = replace_linear_with_colwise(linear, hot_idx, mode=mode)
+
+                if ELEMENTWISE_LINEAR:
+                    #wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
+                    wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx)
+                else:
+                    wrapped = replace_linear_with_colwise(linear, hot_idx, mode=mode)
                 if name.startswith("self_attn."):
                     setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
                 else:

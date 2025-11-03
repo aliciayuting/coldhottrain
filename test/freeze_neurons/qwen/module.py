@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -141,6 +142,27 @@ class LinearElementwise(nn.Module):
 
         # y = torch.relu(y)
         return y
+    @staticmethod
+    def from_linear(
+        base: nn.Linear,
+        train_weight_indices: torch.Tensor,
+        train_bias_indices: Optional[torch.Tensor] = None,
+    ) -> "LinearElementwise":
+        # preserve dtype/device and avoid .data
+        w0 = base.weight.detach()
+        if base.bias is not None:
+            b0 = base.bias.detach()
+        else:
+            b0 = torch.zeros(base.out_features, device=w0.device, dtype=w0.dtype)
+
+        return LinearElementwise(
+            in_features=base.in_features,
+            out_features=base.out_features,
+            train_indices=train_weight_indices,
+            #train_bias_indices=train_bias_indices,
+            weight_init=w0,
+            bias_init=b0,
+        )
     
 # def get_size(module):
 #     total = 0
