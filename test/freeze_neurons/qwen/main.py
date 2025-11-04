@@ -7,6 +7,7 @@ from gradient_callback import *
 from probe import *
 from probe2 import *
 import hashlib
+import json
 import time
 import torch.distributed as dist
 # from skip_gradient_callback import SkipGradientCallback
@@ -68,7 +69,7 @@ CHANGE_RANDOM_EVERY_ITERS = 100
 
 
 ELEMENTWISE_LINEAR = True  # whether to use elementwise linear or not
-ELEMENTWISE_SWAP_SCHEME = "input"  # options: "all", "neuron", "input"
+ELEMENTWISE_SWAP_SCHEME = "preselect"  # options: "all", "neuron", "input", "preselect"
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
@@ -212,7 +213,9 @@ if __name__ == "__main__":
     parser.add_argument("--eval-steps", type=int, default=EVAL_LOSS_STEPS, help="eval steps")
     parser.add_argument("--random-swap-iters", type=int, default=100, help="random_swap_iters for HotSwapCallback")
     parser.add_argument("--elementwise-linear", type=str2bool, default=True, help="Whether to use elementwise linear or not")
-    parser.add_argument("--elementwise-swap-scheme", type=str, default="neuron", help="Elementwise swap scheme: options are 'all', 'neuron', 'input'")
+    parser.add_argument("--elementwise-swap-scheme", type=str, default="neuron", help="Elementwise swap scheme: options are 'all', 'neuron', 'input', 'preselect'")
+    parser.add_argument("--preselect-file", type=str, default="", help="Preselection file for elementwise swap")
+    parser.add_argument("--run-name", type=str, default="", help="Run name for logging and saving")
     args_cmd = parser.parse_args()
     skip_ratio = args_cmd.skip_ratio
     benchmark_time = args_cmd.benchmark_time
@@ -223,13 +226,61 @@ if __name__ == "__main__":
     logging_steps = args_cmd.logging_steps
     eval_steps = args_cmd.eval_steps
     random_swap_iters = args_cmd.random_swap_iters
+    preselect_file = args_cmd.preselect_file
     ELEMENTWISE_LINEAR = args_cmd.elementwise_linear
     ELEMENTWISE_SWAP_SCHEME = args_cmd.elementwise_swap_scheme
+    RUN_NAME = args_cmd.run_name if args_cmd.run_name else RUN_NAME
     print(f"model= {MODEL}, skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}, mode = {mode}, gradient_checkpointing = {gradient_checkpointing}, gradient_accumulation_steps = {gradient_accumulation_steps}")
 
+    preselect_lookup = {}
+    if ELEMENTWISE_SWAP_SCHEME == "preselect":
+        if not preselect_file:
+            raise ValueError("ELEMENTWISE_SWAP_SCHEME='preselect' requires --preselect-file to be specified")
+        try:
+            with open(preselect_file, "r", encoding="utf-8") as fh:
+                preselect_payload = json.load(fh)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Preselect file not found: {preselect_file}") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Failed to parse JSON from preselect file {preselect_file}: {exc}") from exc
 
+        raw_layers = preselect_payload.get("layers", {})
+        if not raw_layers:
+            raise ValueError(f"No layer selections found in preselect file: {preselect_file}")
 
-    output_dir = os.path.join(SCRATCH, f"jamal-runs-benckmarking/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{skip_ratio}")
+        aggregated = {}
+        for raw_name, info in raw_layers.items():
+            short_name = os.path.basename(raw_name)
+            entry = aggregated.setdefault(
+                short_name,
+                {"weights": set(), "bias": set(), "shape": None},
+            )
+            shape = tuple(info.get("shape", []))
+            if shape:
+                if entry["shape"] is None:
+                    entry["shape"] = shape
+                elif entry["shape"] != shape:
+                    raise ValueError(f"Conflicting shapes for {short_name}: {entry['shape']} vs {shape}")
+            for pair in info.get("train_weight_indices", []):
+                if len(pair) != 2:
+                    raise ValueError(f"Invalid weight index {pair} for {short_name}")
+                entry["weights"].add((int(pair[0]), int(pair[1])))
+            for idx in info.get("train_bias_indices", []):
+                entry["bias"].add(int(idx))
+
+        for short_name, entry in aggregated.items():
+            weights_sorted = sorted(entry["weights"])
+            bias_sorted = sorted(entry["bias"])
+            preselect_lookup[short_name] = {
+                "shape": entry["shape"],
+                "train_weight_indices": weights_sorted,
+                "train_bias_indices": bias_sorted,
+            }
+
+        if not preselect_lookup:
+            raise ValueError(f"Preselect file {preselect_file} produced no usable layer entries")
+
+    output_dir = os.path.join(SCRATCH, f"jamal-runs-benckmarking/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{RUN_NAME}")
     os.makedirs(output_dir, exist_ok=True)
     # print(f"Output dir: {output_dir}")
     # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -300,7 +351,7 @@ if __name__ == "__main__":
 
 
     if skip_ratio > 0.0:
-        print("SKIP is set to True, skipping replacement of linear layers with LinearColWise.")
+        print("SKIP is set to True, elementwise_linear =", ELEMENTWISE_LINEAR, ", ELEMENTWISE_SWAP_SCHEME =", ELEMENTWISE_SWAP_SCHEME)
 
         embedding: nn.Embedding = model.model.embed_tokens
         hot_idx = make_hot_idx(embedding.num_embeddings, frac=1-skip_ratio, device=embedding.weight.device)
@@ -327,6 +378,7 @@ if __name__ == "__main__":
                 out_features = linear.out_features
                 # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
                 
+                mod_name, proj_name = name.split(".", 1)
 
                 if ELEMENTWISE_LINEAR:
                     #wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
@@ -339,6 +391,29 @@ if __name__ == "__main__":
                     elif ELEMENTWISE_SWAP_SCHEME == "input":
                         hot_idx = make_hot_idx(linear.in_features, frac=1-skip_ratio, device=linear.weight.device)
                         wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)
+                    elif ELEMENTWISE_SWAP_SCHEME == "preselect":
+                        selection_key = f"L{i:02d}_{mod_name}_{proj_name}_weight.npy"
+                        layer_selection = preselect_lookup.get(selection_key)
+                        if layer_selection is None:
+                            available = ", ".join(sorted(preselect_lookup.keys()))
+                            raise KeyError(f"No preselect entry for {selection_key}. Available entries: {available}")
+                        expected_shape = tuple(layer_selection.get("shape") or [])
+                        if expected_shape and tuple(linear.weight.shape) != expected_shape:
+                            raise ValueError(
+                                f"Shape mismatch for {selection_key}: preselect {expected_shape}, "
+                                f"module {tuple(linear.weight.shape)}"
+                            )
+                        weight_pairs = layer_selection.get("train_weight_indices", [])
+                        if not weight_pairs:
+                            raise ValueError(f"Preselect entry {selection_key} has no weight indices")
+                        w_idx = torch.as_tensor(weight_pairs, dtype=torch.long, device=linear.weight.device)
+                        bias_indices = layer_selection.get("train_bias_indices", [])
+                        b_idx = (
+                            torch.as_tensor(bias_indices, dtype=torch.long, device=linear.weight.device)
+                            if bias_indices
+                            else None
+                        )
+                        wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx)
                     else:
                         raise ValueError(f"Unsupported ELEMENTWISE_SWAP_SCHEME: {ELEMENTWISE_SWAP_SCHEME}")
                 else:
@@ -354,7 +429,7 @@ if __name__ == "__main__":
             # print(type(layer.mlp.up_proj),      layer.mlp.up_proj.W_hot.shape,      layer.mlp.up_proj.W_cold.shape)
 
     else:
-        print("SKIP is set to False, not replacing linear layers with LinearColWise.")
+        print("SKIP is set to False, not replacing linear layers.")
 
 
     verify_shapes_across_ranks(model)
@@ -458,16 +533,16 @@ if __name__ == "__main__":
     # )
     # trainer.add_callback(skipgradient_cb)
 
-    # dump_cb = PerModuleGradDumper(
-    #     out_dir=dump_out_dir,
-    #     model=model,
-    #     capture_steps=100,
-    #     include_bias=True,
-    #     also_embeddings=True,  # set True if you also want embeddings/lm_head
-    #     # weight_out_dir=weight_out_dir,
-    # )
+    dump_cb = PerModuleGradDumper(
+        out_dir=dump_out_dir,
+        model=model,
+        capture_steps=100,
+        include_bias=True,
+        also_embeddings=True,  # set True if you also want embeddings/lm_head
+        # weight_out_dir=weight_out_dir,
+    )
 
-    # trainer.add_callback(dump_cb)
+    #trainer.add_callback(dump_cb)
 
     probe_cb = Probe()
     ram_cb = VramBreakdownCallback()

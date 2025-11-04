@@ -108,6 +108,8 @@ class HotSwapCallback(TrainerCallback):
                                 keep_state=True,
                                 optimizer=optimizer,
                             )
+                        elif self.elementwise_scheme == "preselect":
+                            continue
                         else:
                             raise ValueError(f"Unsupported elementwise_scheme: {self.elementwise_scheme}")
 

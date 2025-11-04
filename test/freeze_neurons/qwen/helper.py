@@ -215,6 +215,31 @@ def replace_linear_with_elementwise_random(mod: nn.Module, percent_hot: float) -
         train_bias_indices=train_bias_indices,
     )
 
+def replace_linear_with_elementwise_preselected(mod: nn.Module, w_idx: torch.Tensor, b_idx: Optional[torch.Tensor] = None) -> "LinearElementwise":
+    """
+    Wrap an nn.Linear in a LinearElementwise with preselected trainable weights/biases.
+
+    Args:
+        mod: nn.Linear to convert.
+        w_idx: [k, 2] LongTensor of (out_row, in_col) indices of trainable weights.
+        b_idx: Optional [k_b] LongTensor of trainable bias indices.
+
+    Returns:
+        LinearElementwise initialized from `mod` via LinearElementwise.from_linear(...)
+    """
+    if not isinstance(mod, nn.Linear):
+        raise TypeError("mod must be an nn.Linear")
+    if w_idx.ndim != 2 or w_idx.size(1) != 2:
+        raise ValueError("w_idx must be a [k, 2] LongTensor of (out_row, in_col) indices")
+    if b_idx is not None and b_idx.ndim != 1:
+        raise ValueError("b_idx must be a [k_b] LongTensor of bias indices")
+
+    return LinearElementwise.from_linear(
+        base=mod,
+        train_weight_indices=w_idx,
+        train_bias_indices=b_idx,
+    )
+
 def replace_embedding_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> EmbeddingColWise:
     assert isinstance(mod, nn.Embedding)
     hot_idx = hot_idx.to(mod.weight.device)
