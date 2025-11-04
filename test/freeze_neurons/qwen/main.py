@@ -68,6 +68,7 @@ CHANGE_RANDOM_EVERY_ITERS = 100
 
 
 ELEMENTWISE_LINEAR = True  # whether to use elementwise linear or not
+ELEMENTWISE_SWAP_SCHEME = "input"  # options: "all", "neuron", "input"
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
@@ -321,12 +322,23 @@ if __name__ == "__main__":
                 # print(f"Processing {name}: {tuple(linear.weight.shape)}")
                 out_features = linear.out_features
                 # hot_idx = make_hot_idx(out_features, frac=policy_by_name[name], device=linear.weight.device)
-                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                
 
                 if ELEMENTWISE_LINEAR:
                     #wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
-                    wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx)
+                    if ELEMENTWISE_SWAP_SCHEME == "all":
+                        hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                        wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
+                    elif ELEMENTWISE_SWAP_SCHEME == "neuron":
+                        hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                        wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx)
+                    elif ELEMENTWISE_SWAP_SCHEME == "input":
+                        hot_idx = make_hot_idx(linear.in_features, frac=1-skip_ratio, device=linear.weight.device)
+                        wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)
+                    else:
+                        raise ValueError(f"Unsupported ELEMENTWISE_SWAP_SCHEME: {ELEMENTWISE_SWAP_SCHEME}")
                 else:
+                    hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
                     wrapped = replace_linear_with_colwise(linear, hot_idx, mode=mode)
                 if name.startswith("self_attn."):
                     setattr(layer.self_attn, name.split(".", 1)[1], wrapped)
@@ -460,7 +472,7 @@ if __name__ == "__main__":
     trainer.add_callback(ram_cb)
     
 
-    hotswap_cb = HotSwapCallback(swap_iters=random_swap_iters)
+    hotswap_cb = HotSwapCallback(swap_iters=random_swap_iters, elementwise_scheme=ELEMENTWISE_SWAP_SCHEME)
     trainer.add_callback(hotswap_cb)
 
     print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")

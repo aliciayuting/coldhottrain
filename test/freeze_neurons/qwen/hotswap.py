@@ -5,6 +5,7 @@ import torch
 import logging
 from helper import *
 from module import EmbeddingColWise, LinearColWise
+from linear_elementwise import LinearElementwise
 from accelerate.utils import extract_model_from_parallel
 
 logger = logging.getLogger(__name__)
@@ -13,9 +14,10 @@ def _is_main():
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
 
 class HotSwapCallback(TrainerCallback):
-    def __init__(self, swap_iters=100):
+    def __init__(self, swap_iters=100, elementwise_scheme= "all"):
         self.model = None  # will be set on first call
         self.swap_iters = swap_iters
+        self.elementwise_scheme = elementwise_scheme
 
 
     def _unwrap_optimizer(self, opt):
@@ -69,6 +71,45 @@ class HotSwapCallback(TrainerCallback):
                         #new_hot_idx = mod.hot_idx.clone()
                         mod.switch_hot(new_hot_idx=new_hot_idx, keep_state=True, optimizer=optimizer)
                         mod._assert_optimizer_has(optimizer)
+                    if isinstance(mod, LinearElementwise):
+                        if self.elementwise_scheme == "neuron":
+                            new_hot_idx = make_hot_idx_n(out_features=mod.out_features, n=mod.bias_idx.numel(), device=mod.vals.device)
+                            w_idx, b_idx = build_elementwise_indices_from_hotidx(
+                                out_features=mod.out_features,
+                                in_features=mod.in_features,
+                                hot_idx=new_hot_idx,
+                                device=mod.vals.device,
+                            )
+                            mod.hotswap(
+                                new_weight_indices=w_idx,
+                                new_bias_indices=b_idx,
+                                keep_state=True,
+                                optimizer=optimizer,
+                            )
+                        elif self.elementwise_scheme == "all":
+                            frac = float(mod.bias_idx.numel()) / mod.out_features
+                            w_idx, b_idx = build_elementwise_indices_from_random(
+                                out_features=mod.out_features,
+                                in_features=mod.in_features,
+                                frac=frac,
+                                device=mod.vals.device,
+                            )
+                        elif self.elementwise_scheme == "input":
+                            new_hot_idx = make_hot_idx_n(out_features=mod.in_features, n=mod.store_n, device=mod.vals.device)
+                            w_idx, b_idx = build_elementwise_indices_from_hotidx_input_features(
+                                out_features=mod.out_features,
+                                in_features=mod.in_features,
+                                hot_idx=new_hot_idx,
+                                device=mod.vals.device,
+                            )
+                            mod.hotswap(
+                                new_weight_indices=w_idx,
+                                new_bias_indices=b_idx,
+                                keep_state=True,
+                                optimizer=optimizer,
+                            )
+                        else:
+                            raise ValueError(f"Unsupported elementwise_scheme: {self.elementwise_scheme}")
 
         verify_shapes_across_ranks(self.model)
         verify_weights_across_ranks(self.model)

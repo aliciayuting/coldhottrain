@@ -1,7 +1,7 @@
 #ratio=0.00000000001
 ratio=0.8
-random_swap_iters=1000000
-mode="1linear_efficient"
+random_swap_iters=100
+mode="1linear"
 MODEL=Qwen/Qwen2.5-0.5B
 DATASET="mnli"
 gradient_checkpointing="true"
