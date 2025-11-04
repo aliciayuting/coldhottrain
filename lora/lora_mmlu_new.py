@@ -3,6 +3,7 @@
 LoRA finetune Qwen on MMLU dataset
 Usage:
     python lora_mmlu.py --model Qwen/Qwen2.5-0.5B-Instruct --batch_size 4
+Added more print for debugging evaluation metrics.
 """
 
 import os
