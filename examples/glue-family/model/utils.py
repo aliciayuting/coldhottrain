@@ -86,7 +86,7 @@ def get_model(
         )
         model = get_peft_model(model, peft_config)
         model.can_return_loss = True
-    elif coldneuron_args.skip_ratio > 0:
+    elif coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
         print("***** Using Skip *****")
         model.enable_input_require_grads()
         total_buffers = sum(b.numel() for b in model.buffers())
@@ -94,6 +94,12 @@ def get_model(
         fix_linear_modules(model, config, coldneuron_args.skip_ratio)
         after_total_buffers = sum(b.numel() for b in model.buffers())
         print(f"Total buffers after adding linearcolwise: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
+    elif coldneuron_args.skip_ratio > 0 and coldneuron_args.use_masked_skipgradient:
+        print("***** Using Skip *****")
+        model.enable_input_require_grads()
+        for name, param in model.named_parameters():
+            if not ("query" in name or "value" in name or "classifier" in name):
+                param.requires_grad = False
 
     for name, param in model.named_parameters():
         if param.requires_grad:

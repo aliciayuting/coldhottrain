@@ -118,40 +118,74 @@ def get_trainer(args):
         ]
     else:
         early_stopping_callback = []
-    
-
-    # optim = AdamW(
-    #     filter(lambda p: p.requires_grad, model.parameters()),
-    #     lr=training_args.learning_rate,
-    #     eps=training_args.adam_epsilon,
-    #     weight_decay=training_args.weight_decay,
-    #     betas=(training_args.adam_beta1, training_args.adam_beta2),
-    # )
 
 
-    # lr_scheduler = get_linear_schedule_with_warmup(
-    #     optim,
-    #     num_warmup_steps=0,
-    #     num_training_steps=33135,
-    # )
+    if coldneuron_args.skip_ratio > 0 and coldneuron_args.use_masked_skipgradient:
+        print("***** using masked skipgradient *****")
+        opt_kwargs = {
+            "mask_dict": {},
+            "named_parameters": dict(model.named_parameters()),
+            "freeze_state": "zero", 
+            "lr": training_args.learning_rate,
+            "fused": True,
+        }
+        skipgradient_cb = SkipGradientCallback(
+            model=model,
+            zero_mode="neurons",
+            output_dir=training_args.output_dir,
+            mode="random",
+            random_hot_k_percent=1-coldneuron_args.skip_ratio,
+            change_random_every_iters=coldneuron_args.change_iters,
+        )
+        trainer = trainer_cls(
+            model=model,
+            args=training_args,
+            train_dataset=dataset.train_dataset if training_args.do_train else None,
+            eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
+            compute_metrics=dataset.compute_metrics,
+            tokenizer=tokenizer,
+            data_collator=dataset.data_collator,
+            callbacks=early_stopping_callback,
+            optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs),
+        )
+        # trainer.create_optimizer_and_scheduler(num_training_steps=33135)
+        trainer.create_optimizer()
+        trainer.add_callback(skipgradient_cb)
+
+    else:
+
+        # optim = AdamW(
+        #     filter(lambda p: p.requires_grad, model.parameters()),
+        #     lr=training_args.learning_rate,
+        #     eps=training_args.adam_epsilon,
+        #     weight_decay=training_args.weight_decay,
+        #     betas=(training_args.adam_beta1, training_args.adam_beta2),
+        # )
 
 
-    trainer = trainer_cls(
-        model=model,
-        args=training_args,
-        train_dataset=dataset.train_dataset if training_args.do_train else None,
-        eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
-        compute_metrics=dataset.compute_metrics,
-        tokenizer=tokenizer,
-        data_collator=dataset.data_collator,
-        callbacks=early_stopping_callback,
-        # optimizers=( optim, lr_scheduler),
-    )
+        # lr_scheduler = get_linear_schedule_with_warmup(
+        #     optim,
+        #     num_warmup_steps=0,
+        #     num_training_steps=33135,
+        # )
 
-    trainer.create_optimizer_and_scheduler(num_training_steps=33135)
 
-    vram_breakdown_callback = VramBreakdownCallback()
-    trainer.add_callback(vram_breakdown_callback)
+        trainer = trainer_cls(
+            model=model,
+            args=training_args,
+            train_dataset=dataset.train_dataset if training_args.do_train else None,
+            eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
+            compute_metrics=dataset.compute_metrics,
+            tokenizer=tokenizer,
+            data_collator=dataset.data_collator,
+            callbacks=early_stopping_callback,
+            # optimizers=( optim, lr_scheduler),
+        )
+
+        trainer.create_optimizer_and_scheduler(num_training_steps=33135)
+
+    # vram_breakdown_callback = VramBreakdownCallback()
+    # trainer.add_callback(vram_breakdown_callback)
 
     opt = trainer.optimizer
     print(f"optimizer type: {type(opt)}")
