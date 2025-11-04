@@ -211,6 +211,8 @@ if __name__ == "__main__":
     parser.add_argument("--logging-steps", type=int, default=50, help="logging steps")
     parser.add_argument("--eval-steps", type=int, default=EVAL_LOSS_STEPS, help="eval steps")
     parser.add_argument("--random-swap-iters", type=int, default=100, help="random_swap_iters for HotSwapCallback")
+    parser.add_argument("--elementwise-linear", type=str2bool, default=True, help="Whether to use elementwise linear or not")
+    parser.add_argument("--elementwise-swap-scheme", type=str, default="neuron", help="Elementwise swap scheme: options are 'all', 'neuron', 'input'")
     args_cmd = parser.parse_args()
     skip_ratio = args_cmd.skip_ratio
     benchmark_time = args_cmd.benchmark_time
@@ -221,6 +223,8 @@ if __name__ == "__main__":
     logging_steps = args_cmd.logging_steps
     eval_steps = args_cmd.eval_steps
     random_swap_iters = args_cmd.random_swap_iters
+    ELEMENTWISE_LINEAR = args_cmd.elementwise_linear
+    ELEMENTWISE_SWAP_SCHEME = args_cmd.elementwise_swap_scheme
     print(f"model= {MODEL}, skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}, mode = {mode}, gradient_checkpointing = {gradient_checkpointing}, gradient_accumulation_steps = {gradient_accumulation_steps}")
 
 

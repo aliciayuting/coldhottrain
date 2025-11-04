@@ -78,11 +78,12 @@ def get_non_trainable_indices(in_features, out_features: int, w, b) -> torch.Ten
     hot_w = w[:, 0] * total_in + w[:, 1]
     cold_w = all_w[~torch.isin(all_w, hot_w)]
     cold_w_pairs = torch.stack((cold_w // total_in, cold_w % total_in), dim=1)
+    print("Non-trainable weight indices:", cold_w_pairs)
 
+    if b != None:
+        return
     all_b = torch.arange(total_out, device=b.device)
     cold_b = all_b[~torch.isin(all_b, b)]
-
-    print("Non-trainable weight indices:", cold_w_pairs)
     print("Non-trainable bias indices:", cold_b)
 
 def build_elementwise_indices_from_hotidx(out_features: int, in_features: int, hot_idx: torch.Tensor, device=None):
@@ -147,14 +148,15 @@ def build_elementwise_indices_from_random(out_features: int, in_features: int, f
 
 def replace_linear_with_elementwise_hotidx(mod: nn.Linear, hot_rows: torch.Tensor) -> "LinearElementwise":
     
-    #print(f"Replacing {mod._get_name()} with LinearElementwise: {w_idx.size(0)} trainable weights, {b_idx.size(0)} trainable biases")
-    #print(get_non_trainable_indices(mod.in_features, mod.out_features, w_idx, b_idx))
+    
     w_idx, b_idx = build_elementwise_indices_from_hotidx(
         out_features=mod.out_features,
         in_features=mod.in_features,
         hot_idx=hot_rows,
         device=mod.weight.device,
     )
+    #print(f"Replacing {mod._get_name()} with LinearElementwise: {w_idx.size(0)} trainable weights, {b_idx.size(0)} trainable biases")
+    #print(get_non_trainable_indices(mod.in_features, mod.out_features, w_idx, b_idx))
     le = LinearElementwise.from_linear(
         mod,
         train_weight_indices=w_idx,
@@ -171,8 +173,8 @@ def replace_linear_with_elementwise_hotidx_input_features(mod: nn.Linear, hot_co
         hot_idx=hot_cols,
         device=mod.weight.device,
     )
-    print(f"Replacing {mod._get_name()} with LinearElementwise: {w_idx.size(0)} trainable weights")
-    print(get_non_trainable_indices(mod.in_features, mod.out_features, w_idx, b_idx))
+    #print(f"Replacing {mod._get_name()} with LinearElementwise: {w_idx.size(0)} trainable weights")
+    #print(get_non_trainable_indices(mod.in_features, mod.out_features, w_idx, b_idx))
     le = LinearElementwise.from_linear(
         mod,
         train_weight_indices=w_idx,
