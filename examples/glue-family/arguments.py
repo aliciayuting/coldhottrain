@@ -340,9 +340,9 @@ class ColdNeuronArguments:
         default=0.0, metadata={"help": "The skip ratio for cold neuron training."}
     )
 
-    use_masked_skipgradient: bool = field(
-        default=False, metadata={"help": "Whether to use masked skipgradient."}
-    )   
+    # use_masked_skipgradient: bool = field(
+    #     default=False, metadata={"help": "Whether to use masked skipgradient."}
+    # )   
     
     change_iters: int = field(
         default=1000, metadata={"help": "Change mask every these many iterations."}
