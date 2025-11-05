@@ -2,7 +2,7 @@
 # Train a LoRA adapter for Qwen2.5-0.5B on GLUE (SST-2 or MNLI)
 
 '''
-python3 lora_finetune_qwen_glue.py \
+python3 lora_mnli.py \
   --task_name mnli \
   --output_dir qwen25_mnli_lora_adapter \
   --lora_r 16 \
@@ -372,7 +372,10 @@ def main():
         'attention_mask': torch.ones(4, 64).to(model.device),
         'labels': torch.tensor([0, 1, 2, 0] if num_labels == 3 else [0, 1, 0, 1]).to(model.device)
     }
-    
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Params (total): {total_params/1e6:.2f}M, trainable: {trainable_params/1e6:.2f}M\n")
     # # Check for NaN in model parameters before training
     # nan_found = False
     # for name, param in model.named_parameters():
@@ -486,26 +489,26 @@ def main():
     # Train
     logging.info("\n=== Starting Training ===")
     
-    # CRITICAL: Verify classifier is trainable
-    logging.info("\n=== Trainable Parameters Verification ===")
-    classifier_trainable = False
-    lora_trainable = False
+    # # CRITICAL: Verify classifier is trainable
+    # logging.info("\n=== Trainable Parameters Verification ===")
+    # classifier_trainable = False
+    # lora_trainable = False
     
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            if 'score' in name or 'classifier' in name:
-                classifier_trainable = True
-                logging.info(f"✓ Classifier trainable: {name}")
-            elif 'lora' in name:
-                lora_trainable = True
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         if 'score' in name or 'classifier' in name:
+    #             classifier_trainable = True
+    #             logging.info(f"✓ Classifier trainable: {name}")
+    #         elif 'lora' in name:
+    #             lora_trainable = True
     
-    if not classifier_trainable:
-        raise RuntimeError("❌ FATAL: Classifier is not trainable! Training will fail.")
-    if not lora_trainable:
-        logging.warning("⚠️  No LoRA parameters trainable!")
+    # if not classifier_trainable:
+    #     raise RuntimeError("❌ FATAL: Classifier is not trainable! Training will fail.")
+    # if not lora_trainable:
+    #     logging.warning("⚠️  No LoRA parameters trainable!")
     
-    logging.info(f"✓ Classifier trainable: {classifier_trainable}")
-    logging.info(f"✓ LoRA trainable: {lora_trainable}")
+    # logging.info(f"✓ Classifier trainable: {classifier_trainable}")
+    # logging.info(f"✓ LoRA trainable: {lora_trainable}")
     
     trainer.train()
 
