@@ -23,9 +23,9 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../benchmark/qwen/")))
 from custom_adam import MaskedAdamW
 from skip_gradient_callback import SkipGradientCallback
-# from probe2 import VramBreakdownCallback
+from probe2 import VramBreakdownCallback
 # from probe3 import VramBreakdownCallback
-from probe4 import VramBreakdownCallback
+# from probe4 import VramBreakdownCallback
 from model.utils import fix_linear_modules
 # from transformers.adapters.configuration import AdapterConfig, PfeifferConfig
 from adapters.training import setup_adapter_training
@@ -33,6 +33,8 @@ import adapters
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from transformers import get_linear_schedule_with_warmup
+
+from training.hotswap import HotSwapCallback
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +122,7 @@ def get_trainer(args):
         early_stopping_callback = []
 
 
-    if coldneuron_args.skip_ratio > 0 and coldneuron_args.use_masked_skipgradient:
-        print("***** using masked skipgradient *****")
+    if coldneuron_args.skip_ratio > 0:
         opt_kwargs = {
             "mask_dict": {},
             "named_parameters": dict(model.named_parameters()),
@@ -129,14 +130,7 @@ def get_trainer(args):
             "lr": training_args.learning_rate,
             "fused": True,
         }
-        skipgradient_cb = SkipGradientCallback(
-            model=model,
-            zero_mode="neurons",
-            output_dir=training_args.output_dir,
-            mode="random",
-            random_hot_k_percent=1-coldneuron_args.skip_ratio,
-            change_random_every_iters=coldneuron_args.change_iters,
-        )
+        
         trainer = trainer_cls(
             model=model,
             args=training_args,
@@ -150,7 +144,19 @@ def get_trainer(args):
         )
         # trainer.create_optimizer_and_scheduler(num_training_steps=33135)
         trainer.create_optimizer()
-        trainer.add_callback(skipgradient_cb)
+
+
+        if coldneuron_args.use_masked_skipgradient:
+            print("**** Using Masked SkipGradient Callback ****")
+            skipgradient_cb = SkipGradientCallback(
+                model=model,
+                zero_mode="neurons",
+                output_dir=training_args.output_dir,
+                mode="random",
+                random_hot_k_percent=1-coldneuron_args.skip_ratio,
+                change_random_every_iters=coldneuron_args.change_iters,
+            )
+            trainer.add_callback(skipgradient_cb)
 
     else:
 
@@ -183,9 +189,15 @@ def get_trainer(args):
         )
 
         trainer.create_optimizer_and_scheduler(num_training_steps=33135)
+        # trainer.create_optimizer()
 
-    # vram_breakdown_callback = VramBreakdownCallback()
-    # trainer.add_callback(vram_breakdown_callback)
+    vram_breakdown_callback = VramBreakdownCallback()
+    trainer.add_callback(vram_breakdown_callback)
+
+
+    if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
+        hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters, elementwise_scheme="all") # TODO: double check if this would matter with linearcolwise
+        trainer.add_callback(hotswap_cb)
 
     opt = trainer.optimizer
     print(f"optimizer type: {type(opt)}")

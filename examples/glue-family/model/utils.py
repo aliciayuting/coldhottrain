@@ -87,7 +87,7 @@ def get_model(
         model = get_peft_model(model, peft_config)
         model.can_return_loss = True
     elif coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
-        print("***** Using Skip *****")
+        print("***** Using Skip customized module *****")
         model.enable_input_require_grads()
         total_buffers = sum(b.numel() for b in model.buffers())
         print(f"Total buffers before adding linearcolwise: {total_buffers}")
@@ -95,7 +95,7 @@ def get_model(
         after_total_buffers = sum(b.numel() for b in model.buffers())
         print(f"Total buffers after adding linearcolwise: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
     elif coldneuron_args.skip_ratio > 0 and coldneuron_args.use_masked_skipgradient:
-        print("***** Using Skip *****")
+        print("***** Using Skip mask *****")
         model.enable_input_require_grads()
         for name, param in model.named_parameters():
             if not ("query" in name or "value" in name or "classifier" in name):
@@ -156,16 +156,16 @@ def fix_linear_modules(
     else:
         raise AttributeError("Could not find encoder in model")
 
-    for name, module in model.named_modules():
-        module.requires_grad = False
-        for pm, param in module.named_parameters():
-            param.requires_grad = False
+    # for name, module in model.named_modules():
+    #     module.requires_grad = False
+    #     for pm, param in module.named_parameters():
+    #         param.requires_grad = False
 
-    for name, module in model.named_modules():
-        if "classifier" in name:
-            module.requires_grad = True
-            for pm, param in module.named_parameters():
-                param.requires_grad = True  
+    # for name, module in model.named_modules():
+    #     if "classifier" in name:
+    #         module.requires_grad = True
+    #         for pm, param in module.named_parameters():
+    #             param.requires_grad = True  
 
     # Iterate through each encoder layer
     for layer_idx, layer in enumerate(encoder.layer):
@@ -173,7 +173,9 @@ def fix_linear_modules(
         for name, module in layer.named_modules():
             # if layer_idx == 0:
             #     print(f"Layer 0 module: {name}, type: {module.__class__.__name__}")
-            if name.endswith("query") or name.endswith("value"):
+            # if name.endswith("query") or name.endswith("value"):
+            # if True:
+            if isinstance(module, nn.Linear):
                 # # Get the parent module and attribute name
                 parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
                 attr_name = name.split('.')[-1]
@@ -201,6 +203,8 @@ def fix_linear_modules(
                 for pm, param in module.named_parameters():
                     param.requires_grad = True
                     # print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
+            elif "classifier" in name:
+                assert False, "classifier should be in encoder layer"
 
 
 

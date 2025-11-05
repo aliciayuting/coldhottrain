@@ -171,7 +171,7 @@ def main() -> None:
 
     
 
-    if training_args.do_train:
+    if training_args.do_train and coldneuron_args.cold_do_train:
         # Log a few random samples from the training set:
         for index in random.sample(range(len(dataset.train_dataset)), 3):
             print(
