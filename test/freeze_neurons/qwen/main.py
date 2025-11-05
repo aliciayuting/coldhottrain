@@ -51,8 +51,11 @@ elif DATASET == "gsm8k":
     NUM_EPOCHS=3
 else:
     raise ValueError(f"Unsupported dataset: {DATASET}")
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", 512))
 
 IS_GSM8K = DATASET == "gsm8k"
+
+
 
 RUN_NAME = "random-20p"
 _RUN_TS = time.strftime("%Y%m%d-%H%M%S")
@@ -89,7 +92,7 @@ def tokenize_function_sst(examples):
         examples["sentence"],
         padding="max_length",
         truncation=True,
-        max_length=512
+        max_length=MAX_LENGTH
     )
 
 
@@ -98,7 +101,7 @@ def tokenize_function_mnli(example):
         f"Premise: {example['premise']}; Hypothesis: {example['hypothesis']}",
         padding="max_length",
         truncation=True,
-        max_length=128
+        max_length=MAX_LENGTH
     )
 
 
@@ -117,7 +120,7 @@ def tokenize_function_gsm8k(batch):
     p = tok(prompts, padding=False, truncation=False, add_special_tokens=False)
     c = tok(completions, padding=False, truncation=False, add_special_tokens=False)
 
-    MAX_LEN = 1024
+    MAX_LEN = MAX_LENGTH
     input_ids, labels, attn = [], [], []
     hash_ids = tok(HASH, add_special_tokens=False)["input_ids"]
 
@@ -216,6 +219,8 @@ if __name__ == "__main__":
     parser.add_argument("--elementwise-swap-scheme", type=str, default="neuron", help="Elementwise swap scheme: options are 'all', 'neuron', 'input', 'preselect'")
     parser.add_argument("--preselect-file", type=str, default="", help="Preselection file for elementwise swap")
     parser.add_argument("--run-name", type=str, default="", help="Run name for logging and saving")
+    parser.add_argument("--category-name", type=str, default="", help="Category name for logging and saving")
+    parser.add_argument("--dump-grads", type=str2bool, default=False, help="Whether to dump gradients or not")
     args_cmd = parser.parse_args()
     skip_ratio = args_cmd.skip_ratio
     benchmark_time = args_cmd.benchmark_time
@@ -230,6 +235,7 @@ if __name__ == "__main__":
     ELEMENTWISE_LINEAR = args_cmd.elementwise_linear
     ELEMENTWISE_SWAP_SCHEME = args_cmd.elementwise_swap_scheme
     RUN_NAME = args_cmd.run_name if args_cmd.run_name else RUN_NAME
+    category_name = args_cmd.category_name if args_cmd.category_name else "default"
     print(f"model= {MODEL}, skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}, mode = {mode}, gradient_checkpointing = {gradient_checkpointing}, gradient_accumulation_steps = {gradient_accumulation_steps}")
 
     preselect_lookup = {}
@@ -280,7 +286,7 @@ if __name__ == "__main__":
         if not preselect_lookup:
             raise ValueError(f"Preselect file {preselect_file} produced no usable layer entries")
 
-    output_dir = os.path.join(SCRATCH, f"jamal-runs-benckmarking/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{RUN_NAME}")
+    output_dir = os.path.join(SCRATCH, f"jamal-runs-benckmarking/{category_name}/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}/{RUN_NAME}-{_RUN_TS}")
     os.makedirs(output_dir, exist_ok=True)
     # print(f"Output dir: {output_dir}")
     # output_dir = f"/home/sl3343/coldhottrain/shouxu_runs/{MODEL.replace('/', '_')}-{DATASET.replace('/', '_')}-{RUN_NAME}-{_RUN_TS}"
@@ -302,8 +308,8 @@ if __name__ == "__main__":
         # fp16=True,
         bf16=True,
         logging_steps=logging_steps,
-        save_strategy="steps",
-        save_steps=500,
+        save_strategy="epoch",
+        #save_steps=500,
         # save_strategy="no",
         eval_strategy="steps",
         eval_steps=eval_steps,
@@ -541,8 +547,8 @@ if __name__ == "__main__":
         also_embeddings=True,  # set True if you also want embeddings/lm_head
         # weight_out_dir=weight_out_dir,
     )
-
-    #trainer.add_callback(dump_cb)
+    if args_cmd.dump_grads:
+        trainer.add_callback(dump_cb)
 
     probe_cb = Probe()
     ram_cb = VramBreakdownCallback()
