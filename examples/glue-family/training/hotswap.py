@@ -72,7 +72,6 @@ class HotSwapCallback(TrainerCallback):
                         mod.switch_hot(new_hot_idx=new_hot_idx, keep_state=True, optimizer=optimizer)
                         mod._assert_optimizer_has(optimizer)
                     if isinstance(mod, LinearElementwise):
-                        assert False, "hotswap for LinearElementwise is not fully tested yet"
                         if self.elementwise_scheme == "neuron":
                             new_hot_idx = make_hot_idx_n(out_features=mod.out_features, n=mod.bias_idx.numel(), device=mod.vals.device)
                             w_idx, b_idx = build_elementwise_indices_from_hotidx(
@@ -109,10 +108,12 @@ class HotSwapCallback(TrainerCallback):
                                 keep_state=True,
                                 optimizer=optimizer,
                             )
+                        elif self.elementwise_scheme == "preselect":
+                            continue
                         else:
                             raise ValueError(f"Unsupported elementwise_scheme: {self.elementwise_scheme}")
 
-        # verify_shapes_across_ranks(self.model)
-        # verify_weights_across_ranks(self.model)
+        verify_shapes_across_ranks(self.model)
+        verify_weights_across_ranks(self.model)
             # for g in optimizer.param_groups:
             #     g['params'] = list(g['params'])  # reassign to break potential cached views

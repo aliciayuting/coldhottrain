@@ -13,6 +13,12 @@ from transformers import (
 from adapters import AutoAdapterModel
 
 from model.custom_module import LinearColWise
+from training.helper import (
+    replace_linear_with_elementwise_hotidx,
+    replace_linear_with_elementwise_hotidx_input_features,
+    replace_linear_with_elementwise_preselected,
+    replace_linear_with_elementwise_random,
+)
 
 from peft import LoraConfig, get_peft_model, TaskType as PeftTaskType
 from torchinfo import summary
@@ -86,20 +92,62 @@ def get_model(
         )
         model = get_peft_model(model, peft_config)
         model.can_return_loss = True
-    elif coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
-        print("***** Using Skip customized module *****")
-        model.enable_input_require_grads()
-        total_buffers = sum(b.numel() for b in model.buffers())
-        print(f"Total buffers before adding linearcolwise: {total_buffers}")
-        fix_linear_modules(model, config, coldneuron_args.skip_ratio)
-        after_total_buffers = sum(b.numel() for b in model.buffers())
-        print(f"Total buffers after adding linearcolwise: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
-    elif coldneuron_args.skip_ratio > 0 and coldneuron_args.use_masked_skipgradient:
-        print("***** Using Skip mask *****")
-        model.enable_input_require_grads()
-        for name, param in model.named_parameters():
-            if not ("query" in name or "value" in name or "classifier" in name):
-                param.requires_grad = False
+    elif coldneuron_args.skip_ratio > 0:
+        if coldneuron_args.use_masked_skipgradient:
+            print("***** Using Skip mask *****")
+            model.enable_input_require_grads()
+            for name, param in model.named_parameters():
+                if not ("query" in name or "value" in name or "classifier" in name):
+                    param.requires_grad = False
+        else:
+            if not coldneuron_args.elementwise_linear:
+                print("***** Using Skip customized module *****")
+                model.enable_input_require_grads()
+                total_buffers = sum(b.numel() for b in model.buffers())
+                print(f"Total buffers before adding linearcolwise: {total_buffers}")
+                replace_linear_with_colwise(model, config, coldneuron_args.skip_ratio)
+                after_total_buffers = sum(b.numel() for b in model.buffers())
+                print(f"Total buffers after adding linearcolwise: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
+            else:
+                assert False, "Elementwise linear replacement not supported in main.py currently."
+                # Elementwise linear replacement
+                #wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
+                if coldneuron_args.elementwise_swap_scheme == "all":
+                    hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                    wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
+                elif coldneuron_args.elementwise_swap_scheme == "neuron":
+                    hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
+                    wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx)
+                elif coldneuron_args.elementwise_swap_scheme == "input":
+                    hot_idx = make_hot_idx(linear.in_features, frac=1-skip_ratio, device=linear.weight.device)
+                    wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)
+                elif coldneuron_args.elementwise_swap_scheme == "preselect":
+                    selection_key = f"L{i:02d}_{mod_name}_{proj_name}_weight.npy"
+                    layer_selection = preselect_lookup.get(selection_key)
+                    if layer_selection is None:
+                        available = ", ".join(sorted(preselect_lookup.keys()))
+                        raise KeyError(f"No preselect entry for {selection_key}. Available entries: {available}")
+                    expected_shape = tuple(layer_selection.get("shape") or [])
+                    if expected_shape and tuple(linear.weight.shape) != expected_shape:
+                        raise ValueError(
+                            f"Shape mismatch for {selection_key}: preselect {expected_shape}, "
+                            f"module {tuple(linear.weight.shape)}"
+                        )
+                    weight_pairs = layer_selection.get("train_weight_indices", [])
+                    if not weight_pairs:
+                        raise ValueError(f"Preselect entry {selection_key} has no weight indices")
+                    w_idx = torch.as_tensor(weight_pairs, dtype=torch.long, device=linear.weight.device)
+                    bias_indices = layer_selection.get("train_bias_indices", [])
+                    b_idx = (
+                        torch.as_tensor(bias_indices, dtype=torch.long, device=linear.weight.device)
+                        if bias_indices
+                        else None
+                    )
+                    wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx)
+                else:
+                    raise ValueError(f"Unsupported coldneuron_args.elementwise_swap_scheme: {coldneuron_args.elementwise_swap_scheme}")
+
+    
 
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -124,17 +172,7 @@ def make_hot_idx(out_features: int, frac: float | None = None, idx: torch.Tensor
     return perm[:k].sort().values
 
 
-def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> LinearColWise:
-    assert isinstance(mod, nn.Linear)
-    hot_idx = hot_idx.to(mod.weight.device)
-    # wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode="1linear_efficient")
-    # print(f"Replaced Linear with LinearColWise: dtype: {mod.weight.dtype}")
-    wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode="1linear")
-    wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
-    return wrapped
-
-
-def fix_linear_modules(
+def replace_linear_with_colwise(
     model,
     config: AutoConfig.from_pretrained,
     skip_ratio: float = 0,
@@ -156,16 +194,16 @@ def fix_linear_modules(
     else:
         raise AttributeError("Could not find encoder in model")
 
-    # for name, module in model.named_modules():
-    #     module.requires_grad = False
-    #     for pm, param in module.named_parameters():
-    #         param.requires_grad = False
+    for name, module in model.named_modules():
+        module.requires_grad = False
+        for pm, param in module.named_parameters():
+            param.requires_grad = False
 
-    # for name, module in model.named_modules():
-    #     if "classifier" in name:
-    #         module.requires_grad = True
-    #         for pm, param in module.named_parameters():
-    #             param.requires_grad = True  
+    for name, module in model.named_modules():
+        if "classifier" in name:
+            module.requires_grad = True
+            for pm, param in module.named_parameters():
+                param.requires_grad = True  
 
     # Iterate through each encoder layer
     for layer_idx, layer in enumerate(encoder.layer):
@@ -173,9 +211,8 @@ def fix_linear_modules(
         for name, module in layer.named_modules():
             # if layer_idx == 0:
             #     print(f"Layer 0 module: {name}, type: {module.__class__.__name__}")
-            # if name.endswith("query") or name.endswith("value"):
-            # if True:
-            if isinstance(module, nn.Linear):
+            if name.endswith("query") or name.endswith("value"):
+            # if isinstance(module, nn.Linear):
                 # # Get the parent module and attribute name
                 parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
                 attr_name = name.split('.')[-1]
@@ -192,17 +229,23 @@ def fix_linear_modules(
                 
                 # Replace the linear module
                 hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
-                wrapped = replace_linear_with_colwise(module, hot_idx)
+                hot_idx = hot_idx.to(module.weight.device)
+                # wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode="1linear_efficient")
+                # print(f"Replaced Linear with LinearColWise: dtype: {mod.weight.dtype}")
+                wrapped = LinearColWise.from_linear(module, hot_idx=hot_idx, mode="1linear")
+                wrapped.to(module.weight.device, dtype=module.weight.dtype)
+
+
                 setattr(parent, attr_name, wrapped)
                 
                 # # Track the replacement
                 # full_name = f"encoder.layer.{layer_idx}.{name}"
                 # print(f"Replaced: {full_name}")
 
-                module.requires_grad = True
-                for pm, param in module.named_parameters():
-                    param.requires_grad = True
-                    # print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
+                # module.requires_grad = True
+                # for pm, param in module.named_parameters():
+                #     param.requires_grad = True
+                #     # print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
             elif "classifier" in name:
                 assert False, "classifier should be in encoder layer"
 

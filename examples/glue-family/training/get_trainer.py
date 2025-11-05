@@ -26,7 +26,6 @@ from skip_gradient_callback import SkipGradientCallback
 from probe2 import VramBreakdownCallback
 # from probe3 import VramBreakdownCallback
 # from probe4 import VramBreakdownCallback
-from model.utils import fix_linear_modules
 # from transformers.adapters.configuration import AdapterConfig, PfeifferConfig
 from adapters.training import setup_adapter_training
 import adapters
@@ -188,8 +187,8 @@ def get_trainer(args):
             # optimizers=( optim, lr_scheduler),
         )
 
-        trainer.create_optimizer_and_scheduler(num_training_steps=33135)
-        # trainer.create_optimizer()
+        # trainer.create_optimizer_and_scheduler(num_training_steps=33135)
+        trainer.create_optimizer()
 
     vram_breakdown_callback = VramBreakdownCallback()
     trainer.add_callback(vram_breakdown_callback)
