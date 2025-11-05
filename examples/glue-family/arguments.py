@@ -356,6 +356,17 @@ class ColdNeuronArguments:
         default=True, metadata={"help": "Whether to do evaluation."}
     )
 
+    elementwise_linear: bool = field(
+        default=False, metadata={"help": "Whether to use elementwise linear for hotswap."}
+    )
+
+    elementwise_swap_scheme: str = field(
+        default="auto", metadata={"help": "Elementwise swap scheme: auto, neuron, all, input"}
+    )
+
+
+
+
 
 
 
