@@ -503,7 +503,9 @@ class LinearColWise(nn.Module):
     def switch_hot(self,
                    new_hot_idx: torch.Tensor,
                    optimizer: torch.optim.Optimizer | None = None,
-                   keep_state: bool = True):
+                   keep_state: bool = True,
+                   all_optimizer_states: dict | None = None,
+                   hot_param_optimizer_states_mapping: dict | None = None):
         """
         Change which output rows are trainable (“hot”) without ever creating a full [out,in] Parameter.
         If `optimizer` is provided, its state is patched so only hot rows hold state.

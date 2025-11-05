@@ -14,10 +14,12 @@ def _is_main():
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
 
 class HotSwapCallback(TrainerCallback):
-    def __init__(self, swap_iters=100, elementwise_scheme= "all"):
+    def __init__(self, swap_iters=100, elementwise_scheme= "all", all_optimizer_states=None, hot_param_optimizer_states_mapping=None):
         self.model = None  # will be set on first call
         self.swap_iters = swap_iters
         self.elementwise_scheme = elementwise_scheme
+        self.all_optimizer_states = all_optimizer_states
+        self.hot_param_optimizer_states_mapping = hot_param_optimizer_states_mapping
 
 
     def _unwrap_optimizer(self, opt):
