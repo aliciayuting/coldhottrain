@@ -137,6 +137,9 @@ def main() -> None:
     selections: Dict[str, Dict[str, object]] = {}
     for path in files:
         rel_key = str(path.relative_to(input_dir))
+        if 'embedding' in rel_key.lower():
+            logging.info("Skipping embedding layer gradient %s", rel_key)
+            continue
         try:
             matrix = np.load(path)
         except Exception as exc:

@@ -1,29 +1,31 @@
 #ratio=0.00000000001
 category_name="debug"
-#run_name="0.8-preselect"
-run_name="baseline-128batch"
+run_name="smartswap-test"
+#run_name="baseline"
 #run_name="0.8-colwise-100iters"
-ratio=0.0
+ratio=0.8
 random_swap_iters=100
 mode="1linear"
 MODEL=Qwen/Qwen2.5-0.5B
 DATASET="mnli"
+epochs=2
 max_length=128
 gradient_checkpointing="true"
-per_device_train_batch_size=128
+per_device_train_batch_size=32
+devices=4
 gradient_accumulation_steps=1
 logging_steps=100
 eval_steps=250
 elementwise_linear="true"
-elementwise_swap_scheme="preselect"
-preselect_file="/share/desa/nfs02/cold/jamal-runs-benckmarking/Qwen_Qwen2.5-0.5B-mnli/0.0/preselect_grads-10p.json"
+elementwise_swap_scheme="smartswap"
+preselect_file="/pscratch/sd/l/lsx/jamal-runs-benckmarking/debug/Qwen_Qwen2.5-0.5B-mnli/baseline-20251105-165015/preselect_grads-5p.json"
 dump_grads="false"
 
 
-cmd="MODEL=${MODEL} DATASET=${DATASET} MAX_LENGTH=${max_length} torchrun --standalone --nproc_per_node=1 /home/jah649/coldhottrain/test/freeze_neurons/qwen/main.py  \
+cmd="MODEL=${MODEL} DATASET=${DATASET} MAX_LENGTH=${max_length} torchrun --standalone --nproc_per_node=${devices} /global/homes/l/lsx/jamal/coldhottrain-memory/test/freeze_neurons/qwen/main.py  \
 --skip-ratio ${ratio} --mode ${mode} --gradient-checkpointing ${gradient_checkpointing} --gradient-accumulation-steps ${gradient_accumulation_steps} \
 --per-device-train-batch-size ${per_device_train_batch_size} --random-swap-iters ${random_swap_iters} --logging-steps ${logging_steps} --eval-steps ${eval_steps} \
 --elementwise-linear ${elementwise_linear} --elementwise-swap-scheme ${elementwise_swap_scheme} --preselect-file ${preselect_file} --dump-grads ${dump_grads} \
---category-name ${category_name} --run-name ${run_name}"
+--epochs ${epochs} --category-name ${category_name} --run-name ${run_name}"
 echo $cmd
 eval $cmd

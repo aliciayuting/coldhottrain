@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Dict, Optional
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPadding, TrainingArguments, Trainer, DataCollatorForLanguageModeling, AutoModelForSequenceClassification
 
 # import torch.nn
@@ -118,6 +118,29 @@ def build_elementwise_indices_from_hotidx_input_features(out_features: int, in_f
     b_idx = None
     return w_idx, b_idx
 
+def build_elementwise_indices_from_preselected(layernum: int, mod_name: str, proj_name: str, linear: nn.Linear, preselect_lookup: Dict[str, Dict[str, object]]):
+    selection_key = f"L{layernum:02d}_{mod_name}_{proj_name}_weight.npy"
+    layer_selection = preselect_lookup.get(selection_key)
+    if layer_selection is None:
+        available = ", ".join(sorted(preselect_lookup.keys()))
+        raise KeyError(f"No preselect entry for {selection_key}. Available entries: {available}")
+    expected_shape = tuple(layer_selection.get("shape") or [])
+    if expected_shape and tuple(linear.weight.shape) != expected_shape:
+        raise ValueError(
+            f"Shape mismatch for {selection_key}: preselect {expected_shape}, "
+            f"module {tuple(linear.weight.shape)}"
+        )
+    weight_pairs = layer_selection.get("train_weight_indices", [])
+    if not weight_pairs:
+        raise ValueError(f"Preselect entry {selection_key} has no weight indices")
+    w_idx = torch.as_tensor(weight_pairs, dtype=torch.long, device=linear.weight.device)
+    bias_indices = layer_selection.get("train_bias_indices", [])
+    b_idx = (
+        torch.as_tensor(bias_indices, dtype=torch.long, device=linear.weight.device)
+        if bias_indices
+        else None
+    )
+    return w_idx, b_idx
 
 def build_elementwise_indices_from_random(out_features: int, in_features: int, frac: float, device=None):
     num_w = out_features * in_features
@@ -179,7 +202,7 @@ def replace_linear_with_elementwise_hotidx_input_features(mod: nn.Linear, hot_co
         mod,
         train_weight_indices=w_idx,
         train_bias_indices=b_idx,
-        store_n = n
+        metadata={"store_n": n},
     )
     return le.to(device=mod.weight.device, dtype=mod.weight.dtype)
 
@@ -215,7 +238,61 @@ def replace_linear_with_elementwise_random(mod: nn.Module, percent_hot: float) -
         train_bias_indices=train_bias_indices,
     )
 
-def replace_linear_with_elementwise_preselected(mod: nn.Module, w_idx: torch.Tensor, b_idx: Optional[torch.Tensor] = None) -> "LinearElementwise":
+def extend_with_random_rows(w_idx: torch.Tensor, b_idx: Optional[torch.Tensor], additional_n: int, in_features:int, out_features: int):
+    if additional_n <= 0:
+        return w_idx, b_idx
+
+    device = w_idx.device
+    out_features = out_features
+    in_features = in_features
+
+    if b_idx is not None and b_idx.numel() > 0:
+        existing_rows = b_idx
+    else:
+        raise ValueError("b_idx must be provided and non-empty to extend rows")
+
+    if existing_rows.numel() >= out_features:
+        return w_idx, b_idx
+
+    all_rows = torch.arange(out_features, device=device)
+    if existing_rows.numel() > 0:
+        row_mask = torch.ones(out_features, dtype=torch.bool, device=device)
+        row_mask[existing_rows] = False
+        candidate_rows = all_rows[row_mask]
+    else:
+        candidate_rows = all_rows
+
+    if candidate_rows.numel() == 0:
+        return w_idx, b_idx
+
+    additional_n = min(additional_n, candidate_rows.numel())
+    perm = torch.randperm(candidate_rows.numel(), device=device)
+    new_rows = candidate_rows[perm[:additional_n]]
+    if new_rows.numel() == 0:
+        return w_idx, b_idx
+
+    cols = torch.arange(in_features, device=device)
+    row_repeat = new_rows.repeat_interleave(in_features)
+    col_repeat = cols.repeat(new_rows.numel())
+
+    if w_idx.numel() > 0:
+        existing_lin = w_idx[:, 0] * in_features + w_idx[:, 1]
+        candidate_lin = row_repeat * in_features + col_repeat
+        keep_mask = ~torch.isin(candidate_lin, existing_lin)
+        if keep_mask.any():
+            new_pairs = torch.stack((row_repeat[keep_mask], col_repeat[keep_mask]), dim=1)
+            w_idx = torch.cat((w_idx, new_pairs), dim=0)
+    else:
+        new_pairs = torch.stack((row_repeat, col_repeat), dim=1)
+        w_idx = new_pairs
+
+    if b_idx is None or b_idx.numel() == 0:
+        b_idx = new_rows
+    else:
+        b_idx = torch.unique(torch.cat((b_idx, new_rows)), sorted=False)
+    return w_idx, b_idx
+
+def replace_linear_with_elementwise_preselected(mod: nn.Module, w_idx: torch.Tensor, b_idx: Optional[torch.Tensor] = None, metadata: Dict = {}) -> "LinearElementwise":
     """
     Wrap an nn.Linear in a LinearElementwise with preselected trainable weights/biases.
 
@@ -238,6 +315,7 @@ def replace_linear_with_elementwise_preselected(mod: nn.Module, w_idx: torch.Ten
         base=mod,
         train_weight_indices=w_idx,
         train_bias_indices=b_idx,
+        metadata=metadata,
     )
 
 def replace_embedding_with_colwise(mod: nn.Module, hot_idx: torch.Tensor) -> EmbeddingColWise:

@@ -95,7 +95,9 @@ class HotSwapCallback(TrainerCallback):
                                 device=mod.vals.device,
                             )
                         elif self.elementwise_scheme == "input":
-                            new_hot_idx = make_hot_idx_n(out_features=mod.in_features, n=mod.store_n, device=mod.vals.device)
+                            if 'store_n' not in mod.metadata:
+                                raise ValueError("mod.metadata must contain 'store_n' for elementwise_scheme='input'")
+                            new_hot_idx = make_hot_idx_n(out_features=mod.in_features, n=mod.metadata.get("store_n", 0), device=mod.vals.device)
                             w_idx, b_idx = build_elementwise_indices_from_hotidx_input_features(
                                 out_features=mod.out_features,
                                 in_features=mod.in_features,
@@ -110,6 +112,17 @@ class HotSwapCallback(TrainerCallback):
                             )
                         elif self.elementwise_scheme == "preselect":
                             continue
+                        elif self.elementwise_scheme == "smartswap":
+                            w_idx = mod.metadata.get("hot_w", None)
+                            b_idx = mod.metadata.get("hot_b", None)
+                            additional_n = mod.metadata.get("additional_n", 0)
+                            w_idx, b_idx = extend_with_random_rows(w_idx=w_idx, b_idx=b_idx, additional_n=additional_n, in_features=mod.in_features, out_features=mod.out_features)
+                            mod.hotswap(
+                                new_weight_indices=w_idx,
+                                new_bias_indices=b_idx,
+                                keep_state=True,
+                                optimizer=optimizer,
+                            )
                         else:
                             raise ValueError(f"Unsupported elementwise_scheme: {self.elementwise_scheme}")
 

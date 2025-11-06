@@ -2,6 +2,7 @@ from datasets import load_dataset
 import evaluate
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorForSeq2Seq, DataCollatorWithPadding, TrainingArguments, Trainer, DataCollatorForLanguageModeling, AutoModelForSequenceClassification
 import torch
+from typing import Optional
 # from custom_adam import MaskedAdamW
 from gradient_callback import *
 from probe import *
@@ -71,8 +72,8 @@ RANDOM_HOT_K_PERCENT = 0.2
 CHANGE_RANDOM_EVERY_ITERS = 100
 
 
-ELEMENTWISE_LINEAR = True  # whether to use elementwise linear or not
-ELEMENTWISE_SWAP_SCHEME = "preselect"  # options: "all", "neuron", "input", "preselect"
+ELEMENTWISE_LINEAR = False  # whether to use elementwise linear or not
+ELEMENTWISE_SWAP_SCHEME = "neuron"  # options: "all", "neuron", "input", "preselect", "smartswap"
 
 def safe_destroy():
     if dist.is_available() and dist.is_initialized():
@@ -221,7 +222,9 @@ if __name__ == "__main__":
     parser.add_argument("--run-name", type=str, default="", help="Run name for logging and saving")
     parser.add_argument("--category-name", type=str, default="", help="Category name for logging and saving")
     parser.add_argument("--dump-grads", type=str2bool, default=False, help="Whether to dump gradients or not")
+    parser.add_argument("--epochs", type=int, default=0, help="num epochs to train")
     args_cmd = parser.parse_args()
+    NUM_EPOCHS = args_cmd.epochs if args_cmd.epochs > 0 else NUM_EPOCHS
     skip_ratio = args_cmd.skip_ratio
     benchmark_time = args_cmd.benchmark_time
     mode = args_cmd.mode
@@ -239,7 +242,7 @@ if __name__ == "__main__":
     print(f"model= {MODEL}, skip_ratio = {skip_ratio}, benchmark_time = {benchmark_time}, mode = {mode}, gradient_checkpointing = {gradient_checkpointing}, gradient_accumulation_steps = {gradient_accumulation_steps}")
 
     preselect_lookup = {}
-    if ELEMENTWISE_SWAP_SCHEME == "preselect":
+    if ELEMENTWISE_SWAP_SCHEME in ["preselect", "smartswap"] and ELEMENTWISE_LINEAR == True and skip_ratio > 0:
         if not preselect_file:
             raise ValueError("ELEMENTWISE_SWAP_SCHEME='preselect' requires --preselect-file to be specified")
         try:
@@ -319,6 +322,7 @@ if __name__ == "__main__":
         #save_steps=100,
         save_total_limit=3,
         ddp_find_unused_parameters=False,
+        report_to="tensorboard",
         #max_steps = 10,
         # logging_strategy="no",
         # disable_tqdm=True,
@@ -364,7 +368,6 @@ if __name__ == "__main__":
         #model.model.embed_tokens = replace_embedding_with_colwise(embedding, hot_idx)
 
         layers = get_decoder_layers(model)   # <-- the fix
-        layer_idx = 23
         for i, layer in enumerate(layers):
             mapping = {
                 "self_attn.q_proj": layer.self_attn.q_proj,
@@ -398,28 +401,26 @@ if __name__ == "__main__":
                         hot_idx = make_hot_idx(linear.in_features, frac=1-skip_ratio, device=linear.weight.device)
                         wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)
                     elif ELEMENTWISE_SWAP_SCHEME == "preselect":
-                        selection_key = f"L{i:02d}_{mod_name}_{proj_name}_weight.npy"
-                        layer_selection = preselect_lookup.get(selection_key)
-                        if layer_selection is None:
-                            available = ", ".join(sorted(preselect_lookup.keys()))
-                            raise KeyError(f"No preselect entry for {selection_key}. Available entries: {available}")
-                        expected_shape = tuple(layer_selection.get("shape") or [])
-                        if expected_shape and tuple(linear.weight.shape) != expected_shape:
-                            raise ValueError(
-                                f"Shape mismatch for {selection_key}: preselect {expected_shape}, "
-                                f"module {tuple(linear.weight.shape)}"
-                            )
-                        weight_pairs = layer_selection.get("train_weight_indices", [])
-                        if not weight_pairs:
-                            raise ValueError(f"Preselect entry {selection_key} has no weight indices")
-                        w_idx = torch.as_tensor(weight_pairs, dtype=torch.long, device=linear.weight.device)
-                        bias_indices = layer_selection.get("train_bias_indices", [])
-                        b_idx = (
-                            torch.as_tensor(bias_indices, dtype=torch.long, device=linear.weight.device)
-                            if bias_indices
-                            else None
-                        )
+                        w_idx, b_idx = build_elementwise_indices_from_preselected(i, mod_name, proj_name, linear, preselect_lookup)
                         wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx)
+                    elif ELEMENTWISE_SWAP_SCHEME == "smartswap":
+                        w_idx, b_idx = build_elementwise_indices_from_preselected(i, mod_name, proj_name, linear, preselect_lookup)
+                        #TODO: kind of cheating to do it this way because some models may not have bias, but fine for now
+                        hot_neurons = b_idx
+                        saved_w = w_idx
+                        saved_b = b_idx
+                        print(name)
+                        #print(hot_neurons)
+                        numels = w_idx.size(0)
+                        skipped = 1-float(numels)/(linear.in_features*linear.out_features)
+                        diff = skipped - skip_ratio
+                        additional_n = int(diff * linear.out_features + 0.5)
+                        print(diff)
+
+                        w_idx, b_idx = extend_with_random_rows(w_idx=w_idx, b_idx=b_idx, additional_n=additional_n, in_features=linear.in_features, out_features=linear.out_features)
+
+                        #TODO: disgustingly inefficent. fine for now though
+                        wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx, metadata={"hot_neurons": hot_neurons, "additional_n": additional_n, "hot_w": saved_w, "hot_b": saved_b})
                     else:
                         raise ValueError(f"Unsupported ELEMENTWISE_SWAP_SCHEME: {ELEMENTWISE_SWAP_SCHEME}")
                 else:
