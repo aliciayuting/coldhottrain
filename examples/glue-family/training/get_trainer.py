@@ -196,20 +196,53 @@ def get_trainer(args):
     # get model hidden dimension
     hidden_dim = model.config.hidden_size
     # create a virtual optimizer states for all params
-    optimizer_states = dict() # param name to its optimizer state dict
+    all_optimizer_states = dict() # param name to its optimizer state dict
+    all_optimizer_states_name_mapping = dict() # param id to param name
     for name, param in model.named_parameters():
-        if "queue" in name or "key" in name or "classifier" in name:
-            optimizer_states[name] = {
-                "step": torch.tensor(0, device="cpu", dtype=torch.float32),
-                "exp_avg": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
-                "exp_avg_sq": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
-            }
+        if "query" in name or "value" in name:
+            if "W_hot" in name:
+                all_optimizer_states[id(param)] = {
+                    "step": torch.tensor(0, device="cpu", dtype=torch.float32),
+                    "exp_avg": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
+                    "exp_avg_sq": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
+                }
+            elif "b_hot" in name:
+                all_optimizer_states[id(param)] = {
+                    "step": torch.tensor(0, device="cpu", dtype=torch.float32),
+                    "exp_avg": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                    "exp_avg_sq": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                }
+
+            all_optimizer_states_name_mapping[id(param)] = name
+
+    
+
+    # for param_id, state in all_optimizer_states.items():
+    #     print(f"--param name: {all_optimizer_states_name_mapping[param_id]} id: {param_id} --")
+    #     for skey, sval in state.items():
+    #         if torch.is_tensor(sval):
+    #             # print(f"\tstate key: {skey} shape: {sval.shape} device:{sval.device} dtype: {sval.dtype}")
+    #             all_zero = torch.all(sval == 0)
+    #             print(f"\tstate key: {skey} value: {sval} all_zero: {all_zero}")
+
+    #         else:
+    #             print(f"\tstate key: {skey} value: {sval}")
+
+    # hot_param_optimizer_states_mapping = dict() # param name to param id
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         hot_param_optimizer_states_mapping[name] = id(param)
 
 
-    hot_param_optimizer_states_mapping = dict() # param name to param id
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            hot_param_optimizer_states_mapping[name] = id(param)
+
+
+
+
+
+
+
+
+
 
 
     vram_breakdown_callback = VramBreakdownCallback()
@@ -217,43 +250,35 @@ def get_trainer(args):
 
 
     if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
-        hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters, elementwise_scheme="all") # TODO: double check if this would matter with linearcolwise
+        hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters, elementwise_scheme="all", all_optimizer_states=all_optimizer_states, all_optimizer_states_name_mapping=all_optimizer_states_name_mapping) # TODO: double check if this would matter with linearcolwise
         trainer.add_callback(hotswap_cb)
 
 
 
 
 
-    trainer.add_callback(DebugCallback(swap_iters=1, elementwise_scheme="all"))
+    # trainer.add_callback(DebugCallback(swap_iters=1, elementwise_scheme="all"))
 
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"name: {name} shape: {param.shape} id: {id(param)}")
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         print(f"name: {name} shape: {param.shape} id: {id(param)}")
 
-    opt = trainer.optimizer
-    print(f"optimizer type: {type(opt)}")
-    for i, g in enumerate(opt.param_groups):
-        print(f"Group {i}:")
-        for k, v in g.items():
-            # if k != "params":
-            # if True:
-            #     print(f"\tkey: {k} shape {v.shape} device:{ v.device if hasattr(v, 'device') else 'N/A' }")
-            if v.__class__ != list:
-                print(f"\tkey: {k} value {v}")
-            else:
-                for e in v:
-                    if hasattr(e, 'shape'):
-                        print(f"\tkey: {k} id: {id(e)} shape {e.shape} device:{ e.device if hasattr(e, 'device') else 'N/A' }")
-                    else:
-                        print(f"\tkey: {k} no shape")
-
-    # for name, state in opt.state.items():
-    #     print(f"param id: {name} state keys: {list(state.keys())}")
-        # for skey, sval in state.items():
-        #     if torch.is_tensor(sval):
-        #         print(f"\tstate key: {skey} shape: {sval.shape} device:{sval.device}")
-        #     else:
-        #         print(f"\tstate key: {skey} value: {sval}")
+    # opt = trainer.optimizer
+    # print(f"optimizer type: {type(opt)}")
+    # for i, g in enumerate(opt.param_groups):
+    #     print(f"Group {i}:")
+    #     for k, v in g.items():
+    #         # if k != "params":
+    #         # if True:
+    #         #     print(f"\tkey: {k} shape {v.shape} device:{ v.device if hasattr(v, 'device') else 'N/A' }")
+    #         if v.__class__ != list:
+    #             print(f"\tkey: {k} value {v}")
+    #         else:
+    #             for e in v:
+    #                 if hasattr(e, 'shape'):
+    #                     print(f"\tkey: {k} id: {id(e)} shape {e.shape} device:{ e.device if hasattr(e, 'device') else 'N/A' }")
+    #                 else:
+    #                     print(f"\tkey: {k} no shape")
 
 
     # exit()

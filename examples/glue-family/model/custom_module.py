@@ -403,6 +403,8 @@ class LinearColWise(nn.Module):
             "bias": {}      # for b_* rows (shape [] or [1] per row effectively 1D)
         }
 
+        self.current_hot_idx = hot_idx.clone()
+
     @torch.no_grad()
     def set_cold_from_full(self, full_weight: torch.Tensor, full_bias: torch.Tensor | None = None):
         """Optional utility to refresh the cold part from a full matrix."""
@@ -505,7 +507,8 @@ class LinearColWise(nn.Module):
                    optimizer: torch.optim.Optimizer | None = None,
                    keep_state: bool = True,
                    all_optimizer_states: dict | None = None,
-                   hot_param_optimizer_states_mapping: dict | None = None):
+                   all_optimizer_states_name_mapping: dict | None = None,
+                   print_info: bool = False):
         """
         Change which output rows are trainable (“hot”) without ever creating a full [out,in] Parameter.
         If `optimizer` is provided, its state is patched so only hot rows hold state.
@@ -514,6 +517,7 @@ class LinearColWise(nn.Module):
         """
         device = self.W_cold.device
         dtype  = self.W_cold.dtype
+        new_hot_idx_cpu = new_hot_idx.to(device='cpu')
         new_hot_idx = new_hot_idx.to(device=device, dtype=torch.long).unique(sorted=True)
 
         # Fast no-op if identical
@@ -604,7 +608,9 @@ class LinearColWise(nn.Module):
 
         #new in place swap
         # weights
+        pred_id = id(self.W_hot)
         self.W_hot.detach().copy_(new_W_hot_tensor)   # SAME Parameter object
+        assert id(self.W_hot) == pred_id
         self.W_cold.copy_(new_W_cold_tensor)          # SAME buffer object
 
         # bias
@@ -660,9 +666,75 @@ class LinearColWise(nn.Module):
                     if src_rows is not None and new_rows_d.numel():
                         v.index_copy_(0, new_rows_d, src_rows)
 
-            _remap_state_inplace(self.W_hot,  old_rows_for_those, new_rows_from_old)
+            def sync_optimizer_state(param: torch.nn.Parameter):
+                """Ensure optimizer state for param is on CPU in all_optimizer_states."""
+                assert id(param) in all_optimizer_states, f"{id(param)} not in all_optimizer_states"
+                hot_states = optimizer.state.get(param, None)
+                if not isinstance(hot_states, dict):
+                    return
+                # copy the current hot states to all_optimizer_states
+                for k, v in list(hot_states.items()):
+                    if k == 'step':
+                        continue
+                        # copy the value to the all_optimizer_states directly
+                        all_optimizer_states[id(param)][k].copy_(v)
+                    else:
+                        assert k == 'exp_avg' or k == 'exp_avg_sq', f"Unexpected optimizer state key {k}"
+
+
+                        if print_info and k == "exp_avg":
+                            print(f"\t### self.current_hot_idx: {self.current_hot_idx.tolist()}")
+                            for idx, current_hot in enumerate(self.current_hot_idx.tolist()):
+                                row_sum = v[idx].sum().item()
+                                print(f"\t\t### before copying: {all_optimizer_states_name_mapping[id(param)]} row {current_hot} sum: {row_sum} dtype: {v.dtype}")
+
+                        assert self.current_hot_idx.device == torch.device('cpu'), "new_hot_idx_cpu must be on CPU"
+
+                        v_cpu  = v.to(device='cpu')
+                        # print(f"{all_optimizer_states_name_mapping[id(param)]} v_cpu shape: {v_cpu.shape}, current_hot_idx: {self.current_hot_idx.tolist()} all_optimizer_states[id(param)][k].shape: {all_optimizer_states[id(param)][k].shape}")
+                        all_optimizer_states[id(param)][k].index_copy_(0, self.current_hot_idx, v_cpu)
+                        # print(f"Copied optimizer state for {all_optimizer_states_name_mapping[id(param)]}; hot rows: {self.current_hot_idx.tolist()}")
+                
+                # copy the new_hot_idx states from all_optimizer_states to optimizer.state
+                for k, v in list(hot_states.items()):
+                    if k == 'step':
+                        continue
+                        # copy the value from all_optimizer_states directly
+                        v.copy_(all_optimizer_states[id(param)][k])
+                    else:
+                        assert k == 'exp_avg' or k == 'exp_avg_sq', f"Unexpected optimizer state key {k}"
+
+
+                        assert len(new_hot_idx_cpu) == len(self.current_hot_idx), "new_hot_idx_cpu and self.current_hot_idx must have the same length"
+
+                        prev_states = all_optimizer_states[id(param)][k].index_select(0, new_hot_idx_cpu).to(device=device)
+                        v.zero_()
+                        v.copy_(prev_states)
+                        # v.index_copy_(0, new_hot_idx.to(device=device), prev_states)
+                        # assert v.device == device, "Optimizer state tensor must be on the correct device"
+                        # print(f"Restored optimizer state for {all_optimizer_states_name_mapping[id(param)]}; hot rows: {new_hot_idx_cpu.tolist()}")
+
+
+                        if print_info and k == "exp_avg":
+                            print(f"\t### new_hot_idx_cpu: {new_hot_idx_cpu.tolist()}")
+                            for idx, current_hot in enumerate(new_hot_idx_cpu.tolist()):
+                                row_sum = v[idx].sum().item()
+                                print(f"\t\t### after copying: {all_optimizer_states_name_mapping[id(param)]} row {current_hot} sum: {row_sum}")
+
+
+
+
+            # _remap_state_inplace(self.W_hot,  old_rows_for_those, new_rows_from_old)
+            # print("Syncing optimizer state for weight...")
+            sync_optimizer_state(self.W_hot)
             if self.has_bias:
-                _remap_state_inplace(self.b_hot, old_rows_for_those, new_rows_from_old)
+                # _remap_state_inplace(self.b_hot, old_rows_for_those, new_rows_from_old)
+                sync_optimizer_state(self.b_hot)
+
+        
+
+        self.current_hot_idx = new_hot_idx_cpu.clone()
+
 
     @staticmethod
     def _find_param_in_optimizer(optimizer, target):
