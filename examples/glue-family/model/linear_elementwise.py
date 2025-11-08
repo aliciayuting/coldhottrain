@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Optional, Dict
 
 class LinearElementwise(nn.Module):
     """
@@ -16,7 +16,7 @@ class LinearElementwise(nn.Module):
     W_frozen_init             : optional full frozen [out_features, in_features] (we still zero trainable slots)
     bias_init                 : optional full [out_features] initial bias (used to init both parts)
     b_frozen_init             : optional frozen [out_features] bias (we still zero trainable slots)
-    store_n                   : int, number rows/columns are frozen (just for hotswap callback, should remove)
+    metadata                  : dict, additional metadata for the layer
     Semantics
     ---------
     Effective weight = W_frozen (zeros at trainable slots) + sparse(vals at train_weight_indices)
@@ -27,11 +27,27 @@ class LinearElementwise(nn.Module):
                  train_bias_indices: Optional[torch.Tensor] = None,
                  weight_init=None, W_frozen_init=None,
                  bias_init=None, b_frozen_init=None,
-                 store_n: int = 0):
+                 metadata: Dict = {}):
         super().__init__()
         self.in_features = int(in_features)
         self.out_features = int(out_features)
-        self.store_n = store_n
+        metadata = metadata if metadata is not None else {}
+        self.metadata = dict(metadata)
+        self._metadata_buffer_attr = {}
+        for key, value in self.metadata.items():
+            if torch.is_tensor(value):
+                tensor = value.detach()
+                tensor.requires_grad_(False)
+                safe_key = str(key).replace(".", "_")
+                base_name = f"_metadata_{safe_key}"
+                buf_name = base_name
+                suffix = 0
+                while hasattr(self, buf_name):
+                    suffix += 1
+                    buf_name = f"{base_name}_{suffix}"
+                self.register_buffer(buf_name, tensor)
+                self._metadata_buffer_attr[key] = buf_name
+
         # ----- Trainable WEIGHT indices -----
         w_idx = torch.as_tensor(train_weight_indices, dtype=torch.long)
         if w_idx.ndim != 2 or w_idx.size(1) != 2:
@@ -350,7 +366,7 @@ class LinearElementwise(nn.Module):
         base: nn.Linear,
         train_weight_indices: torch.Tensor,
         train_bias_indices: Optional[torch.Tensor] = None,
-        store_n: int = 0,
+        metadata: Dict = {},
     ) -> "LinearElementwise":
         # Preserve dtype/device via seeds, avoid .data
         w0 = base.weight.detach()
@@ -366,5 +382,5 @@ class LinearElementwise(nn.Module):
             train_bias_indices=train_bias_indices,
             weight_init=w0,
             bias_init=b0,
-            store_n=store_n,
+            metadata=metadata,
         )

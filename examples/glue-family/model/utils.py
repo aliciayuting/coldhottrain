@@ -18,11 +18,15 @@ from training.helper import (
     replace_linear_with_elementwise_hotidx_input_features,
     replace_linear_with_elementwise_preselected,
     replace_linear_with_elementwise_random,
+    build_elementwise_indices_from_preselected,
+    extend_with_random_rows,
 )
 
 from peft import LoraConfig, get_peft_model, TaskType as PeftTaskType
 from torchinfo import summary
 import logging
+from training.helper import get_decoder_layers
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,11 @@ AUTO_PEFT_TASKS = {
     TaskType.MULTIPLE_CHOICE: PeftTaskType.SEQ_CLS,
 }
 
+def is_module_to_replace(name: str, target_modules: list[str]) -> str:
+    for tm in target_modules:
+        if tm in name:
+            return tm
+    return None
 
 def get_model(
     args,
@@ -100,53 +109,136 @@ def get_model(
                 if not ("query" in name or "value" in name or "classifier" in name):
                     param.requires_grad = False
         else:
-            if not coldneuron_args.elementwise_linear:
-                print("***** Using Skip customized module *****")
-                model.enable_input_require_grads()
-                total_buffers = sum(b.numel() for b in model.buffers())
-                print(f"Total buffers before adding linearcolwise: {total_buffers}")
-                replace_linear_with_colwise(model, config, coldneuron_args.skip_ratio)
-                after_total_buffers = sum(b.numel() for b in model.buffers())
-                print(f"Total buffers after adding linearcolwise: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
-            else:
-                assert False, "Elementwise linear replacement not supported in main.py currently."
-                # Elementwise linear replacement
-                #wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
-                if coldneuron_args.elementwise_swap_scheme == "all":
-                    hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
-                    wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-skip_ratio)
-                elif coldneuron_args.elementwise_swap_scheme == "neuron":
-                    hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=linear.weight.device)
-                    wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx)
-                elif coldneuron_args.elementwise_swap_scheme == "input":
-                    hot_idx = make_hot_idx(linear.in_features, frac=1-skip_ratio, device=linear.weight.device)
-                    wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)
-                elif coldneuron_args.elementwise_swap_scheme == "preselect":
-                    selection_key = f"L{i:02d}_{mod_name}_{proj_name}_weight.npy"
-                    layer_selection = preselect_lookup.get(selection_key)
-                    if layer_selection is None:
-                        available = ", ".join(sorted(preselect_lookup.keys()))
-                        raise KeyError(f"No preselect entry for {selection_key}. Available entries: {available}")
-                    expected_shape = tuple(layer_selection.get("shape") or [])
-                    if expected_shape and tuple(linear.weight.shape) != expected_shape:
-                        raise ValueError(
-                            f"Shape mismatch for {selection_key}: preselect {expected_shape}, "
-                            f"module {tuple(linear.weight.shape)}"
-                        )
-                    weight_pairs = layer_selection.get("train_weight_indices", [])
-                    if not weight_pairs:
-                        raise ValueError(f"Preselect entry {selection_key} has no weight indices")
-                    w_idx = torch.as_tensor(weight_pairs, dtype=torch.long, device=linear.weight.device)
-                    bias_indices = layer_selection.get("train_bias_indices", [])
-                    b_idx = (
-                        torch.as_tensor(bias_indices, dtype=torch.long, device=linear.weight.device)
-                        if bias_indices
-                        else None
-                    )
-                    wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx)
-                else:
-                    raise ValueError(f"Unsupported coldneuron_args.elementwise_swap_scheme: {coldneuron_args.elementwise_swap_scheme}")
+            layers = get_decoder_layers(model)
+            target_modules = ["query", "value"]
 
+            preselect_lookup = {}
+            if coldneuron_args.elementwise_swap_scheme == "preselect" or coldneuron_args.elementwise_swap_scheme == "smartswap":
+                # TODO: sync with jamal about how to modify this
+                if not coldneuron_args.preselect_file:
+                    raise ValueError("ELEMENTWISE_SWAP_SCHEME='preselect' requires --preselect-file to be specified")
+                try:
+                    with open(coldneuron_args.preselect_file, "r", encoding="utf-8") as fh:
+                        preselect_payload = json.load(fh)
+                except FileNotFoundError as exc:
+                    raise FileNotFoundError(f"Preselect file not found: {coldneuron_args.preselect_file}") from exc
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Failed to parse JSON from preselect file {coldneuron_args.preselect_file}: {exc}") from exc
+
+                raw_layers = preselect_payload.get("layers", {})
+                if not raw_layers:
+                    raise ValueError(f"No layer selections found in preselect file: {coldneuron_args.preselect_file}")
+
+                aggregated = {}
+                for raw_name, info in raw_layers.items():
+                    short_name = os.path.basename(raw_name)
+                    entry = aggregated.setdefault(
+                        short_name,
+                        {"weights": set(), "bias": set(), "shape": None},
+                    )
+                    shape = tuple(info.get("shape", []))
+                    if shape:
+                        if entry["shape"] is None:
+                            entry["shape"] = shape
+                        elif entry["shape"] != shape:
+                            raise ValueError(f"Conflicting shapes for {short_name}: {entry['shape']} vs {shape}")
+                    for pair in info.get("train_weight_indices", []):
+                        if len(pair) != 2:
+                            raise ValueError(f"Invalid weight index {pair} for {short_name}")
+                        entry["weights"].add((int(pair[0]), int(pair[1])))
+                    for idx in info.get("train_bias_indices", []):
+                        entry["bias"].add(int(idx))
+
+                for short_name, entry in aggregated.items():
+                    weights_sorted = sorted(entry["weights"])
+                    bias_sorted = sorted(entry["bias"])
+                    preselect_lookup[short_name] = {
+                        "shape": entry["shape"],
+                        "train_weight_indices": weights_sorted,
+                        "train_bias_indices": bias_sorted,
+                    }
+
+                if not preselect_lookup:
+                    raise ValueError(f"Preselect file {coldneuron_args.preselect_file} produced no usable layer entries")
+            
+            # freeze all parameters first
+            for name, module in model.named_modules():
+                module.requires_grad = False
+                for pm, param in module.named_parameters():
+                    param.requires_grad = False
+            # unfreeze classifier
+            for name, module in model.named_modules():
+                if "classifier" in name:
+                    module.requires_grad = True
+                    for pm, param in module.named_parameters():
+                        param.requires_grad = True
+
+
+            # Iterate through each encoder layer
+            model.enable_input_require_grads()
+            total_buffers = sum(b.numel() for b in model.buffers())
+            for layer_idx, layer in enumerate(layers):
+                for name, linear in layer.named_modules():
+                    # if any(tm in name for tm in target_modules):
+                    proj_name = is_module_to_replace(name, target_modules)
+                    if proj_name is not None:
+                        parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
+                        attr_name = name.split('.')[-1]
+                        
+                        # Get parent module
+                        if parent_name:
+                            parent = layer
+                            for part in parent_name.split('.'):
+                                parent = getattr(parent, part)
+                        else:
+                            parent = layer
+                        
+                        in_features = linear.in_features
+                        out_features = linear.out_features
+                        assert isinstance(out_features, int) and isinstance(in_features, int)
+                        if not coldneuron_args.elementwise_linear: # linear colwise replacement
+                            hot_idx = make_hot_idx(out_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
+                            wrapped = replace_linear_with_colwise(linear, hot_idx, mode="1linear_efficient")
+                        else:  # linear elementwise replacement
+                            # build preselect_lookup for preselect/smartswap 
+                            if coldneuron_args.elementwise_swap_scheme == "all":
+                                hot_idx = make_hot_idx(out_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
+                                wrapped = replace_linear_with_elementwise_random(linear, percent_hot=1-coldneuron_args.skip_ratio)
+                            elif coldneuron_args.elementwise_swap_scheme == "neuron":
+                                hot_idx = make_hot_idx(out_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
+                                wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx)
+                            elif coldneuron_args.elementwise_swap_scheme == "input":
+                                hot_idx = make_hot_idx(in_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
+                                wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)
+                            elif coldneuron_args.elementwise_swap_scheme == "preselect":
+                                w_idx, b_idx = build_elementwise_indices_from_preselected(layer_idx, "atten", proj_name, linear, preselect_lookup)
+                                wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx)
+                            elif coldneuron_args.elementwise_swap_scheme == "smartswap":
+                                w_idx, b_idx = build_elementwise_indices_from_preselected(layer_idx, "atten", proj_name, linear, preselect_lookup)
+                                #TODO: kind of cheating to do it this way because some models may not have bias, but fine for now
+                                hot_neurons = b_idx
+                                saved_w = w_idx
+                                saved_b = b_idx
+                                print(name)
+                                #print(hot_neurons)
+                                numels = w_idx.size(0)
+                                skipped = 1-float(numels)/(linear.in_features*linear.out_features)
+                                diff = skipped - coldneuron_args.skip_ratio
+                                additional_n = int(diff * linear.out_features + 0.5)
+                                print(diff)
+
+                                w_idx, b_idx = extend_with_random_rows(w_idx=w_idx, b_idx=b_idx, additional_n=additional_n, in_features=linear.in_features, out_features=linear.out_features)
+
+                                #TODO: disgustingly inefficent. fine for now though
+                                wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx, metadata={"hot_neurons": hot_neurons, "additional_n": additional_n, "hot_w": saved_w, "hot_b": saved_b})
+                            else:
+                                raise ValueError(f"Unsupported coldneuron_args.elementwise_swap_scheme: {coldneuron_args.elementwise_swap_scheme}")
+                            
+
+                        setattr(parent, attr_name, wrapped)
+            after_total_buffers = sum(b.numel() for b in model.buffers())
+            print(f"Total buffers after adding replacing: {after_total_buffers}, {after_total_buffers - total_buffers} added.")
+        
     
 
     for name, param in model.named_parameters():
@@ -172,113 +264,14 @@ def make_hot_idx(out_features: int, frac: float | None = None, idx: torch.Tensor
     return perm[:k].sort().values
 
 
-def replace_linear_with_colwise(
-    model,
-    config: AutoConfig.from_pretrained,
-    skip_ratio: float = 0,
-):
-    print(f"Architecture: {config.architectures}, Type: {config.model_type}, Name: {model.__class__.__name__}")
+def replace_linear_with_colwise(mod: nn.Module, hot_idx: torch.Tensor, mode: str = "1linear_efficient") -> LinearColWise:
+    assert isinstance(mod, nn.Linear)
+    hot_idx = hot_idx.to(mod.weight.device)
+    all_out = torch.arange(mod.out_features, device=hot_idx.device)
+    cold_idx = all_out[~torch.isin(all_out, hot_idx)]
 
-    if model.__class__.__name__ not in ["RobertaForSequenceClassification"]:
-        print(f"{model.__class__.__name__} not supported for linear module printing.")
-        return
-    
-    if hasattr(model, 'encoder'):
-        encoder = model.encoder
-    elif hasattr(model, 'roberta'):
-        encoder = model.roberta.encoder
-    elif hasattr(model, 'bert'):
-        encoder = model.bert.encoder
-    elif hasattr(model, 'model') and hasattr(model.model, 'encoder'):
-        encoder = model.model.encoder
-    else:
-        raise AttributeError("Could not find encoder in model")
+    #print("Non-trainable output indices:", cold_idx)
 
-    for name, module in model.named_modules():
-        module.requires_grad = False
-        for pm, param in module.named_parameters():
-            param.requires_grad = False
-
-    for name, module in model.named_modules():
-        if "classifier" in name:
-            module.requires_grad = True
-            for pm, param in module.named_parameters():
-                param.requires_grad = True  
-
-    # Iterate through each encoder layer
-    for layer_idx, layer in enumerate(encoder.layer):
-        # Iterate through all modules in this layer
-        for name, module in layer.named_modules():
-            # if layer_idx == 0:
-            #     print(f"Layer 0 module: {name}, type: {module.__class__.__name__}")
-            if name.endswith("query") or name.endswith("value"):
-            # if isinstance(module, nn.Linear):
-                # # Get the parent module and attribute name
-                parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
-                attr_name = name.split('.')[-1]
-                
-                # Get parent module
-                if parent_name:
-                    parent = layer
-                    for part in parent_name.split('.'):
-                        parent = getattr(parent, part)
-                else:
-                    parent = layer
-                
-                out_features = module.out_features
-                
-                # Replace the linear module
-                hot_idx = make_hot_idx(out_features, frac=1-skip_ratio, device=module.weight.device)
-                hot_idx = hot_idx.to(module.weight.device)
-                # wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode="1linear_efficient")
-                # print(f"Replaced Linear with LinearColWise: dtype: {mod.weight.dtype}")
-                wrapped = LinearColWise.from_linear(module, hot_idx=hot_idx, mode="1linear")
-                wrapped.to(module.weight.device, dtype=module.weight.dtype)
-
-
-                setattr(parent, attr_name, wrapped)
-                
-                # # Track the replacement
-                # full_name = f"encoder.layer.{layer_idx}.{name}"
-                # print(f"Replaced: {full_name}")
-
-                # module.requires_grad = True
-                # for pm, param in module.named_parameters():
-                #     param.requires_grad = True
-                #     # print(f"Unfreezing param: layer {layer_idx} module {name} param {pm}")
-            elif "classifier" in name:
-                assert False, "classifier should be in encoder layer"
-
-
-
-    # encoder_layers = model.roberta.encoder.layer
-    # print(f"Number of encoder layers: {len(encoder_layers)}")
-
-    # # Method 2: Iterate through each layer
-    # for idx, layer in enumerate(encoder_layers):
-    #     if idx > 0:
-    #         break
-    #     print(f"\n--- Layer {idx} ---")
-    #     print(f"Self-attention: {layer.attention}")
-    #     print(f"Intermediate (FFN): {layer.intermediate}")
-    #     print(f"Output: {layer.output}")
-
-    # # Method 3: Access specific components within each layer
-    # for idx, layer in enumerate(encoder_layers):
-    #     if idx > 0:
-    #         break
-    #     print(f"\nLayer {idx} components:")
-    #     # Self-attention components
-    #     print(f"  - Query: {layer.attention.self.query} input_features: {layer.attention.self.query.in_features} output_features: {layer.attention.self.query.out_features}")
-    #     print(f"  - Key: {layer.attention.self.key} input_features: {layer.attention.self.key.in_features} output_features: {layer.attention.self.key.out_features}")
-    #     print(f"  - Value: {layer.attention.self.value} input_features: {layer.attention.self.value.in_features} output_features: {layer.attention.self.value.out_features}")
-    #     print(f"  - Attention output dense: {layer.attention.output.dense} input_features: {layer.attention.output.dense.in_features} output_features: {layer.attention.output.dense.out_features}")
-
-    #     # Feed-forward network components
-    #     print(f"  - Intermediate dense: {layer.intermediate.dense} input_features: {layer.intermediate.dense.in_features} output_features: {layer.intermediate.dense.out_features}")
-    #     print(f"  - Output dense: {layer.output.dense} input_features: {layer.output.dense.in_features} output_features: {layer.output.dense.out_features}")
-
-    # for name, param in model.named_parameters():
-    #     print(f"Param: {name} Numel: {param.numel()}, shape: {param.shape}, Requires grad: {param.requires_grad}")
-    # logger.info(summary(model, depth=5))
-
+    wrapped = LinearColWise.from_linear(mod, hot_idx=hot_idx, mode=mode)
+    wrapped.to(mod.weight.device, dtype=mod.weight.dtype)
+    return wrapped

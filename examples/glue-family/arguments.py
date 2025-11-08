@@ -368,6 +368,10 @@ class ColdNeuronArguments:
         default=0, metadata={"help": "Whether to keep optimizer state during hotswap: 0 - no, 1 - remap, 2 - sync"}
     )
 
+    preselect_file: str = field(
+        default=None, metadata={"help": "Path to preselect file for elementwise swapping."}
+    )
+
 
 
 
