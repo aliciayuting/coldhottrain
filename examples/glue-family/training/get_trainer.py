@@ -35,6 +35,9 @@ from torch.optim.lr_scheduler import LinearLR
 from transformers import get_linear_schedule_with_warmup
 import torch
 
+
+from training.grad_dump_callback import PerModuleGradDumper
+
 from training.hotswap import HotSwapCallback
 
 logger = logging.getLogger(__name__)
@@ -245,8 +248,21 @@ def get_trainer(args):
 
 
 
-    vram_breakdown_callback = VramBreakdownCallback()
-    trainer.add_callback(vram_breakdown_callback)
+    # vram_breakdown_callback = VramBreakdownCallback()
+    # trainer.add_callback(vram_breakdown_callback)
+
+
+    dump_cb = PerModuleGradDumper(
+        out_dir=f"{training_args.output_dir}/grad_dumps",
+        model=model,
+        capture_steps=100,
+        include_bias=True,
+        also_embeddings=False,  # set True if you also want embeddings/lm_head
+        # weight_out_dir=weight_out_dir,
+    )
+
+    trainer.add_callback(dump_cb)
+
 
 
     if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
