@@ -207,7 +207,7 @@ def get_model(
                         assert isinstance(out_features, int) and isinstance(in_features, int)
                         if not coldneuron_args.elementwise_linear: # linear colwise replacement
                             hot_idx = make_hot_idx(out_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
-                            wrapped = replace_linear_with_colwise(linear, hot_idx, mode="1linear_efficient")
+                            wrapped = replace_linear_with_colwise(linear, hot_idx, mode="1linear")
                         else:  # linear elementwise replacement
                             # build preselect_lookup for preselect/smartswap 
                             if coldneuron_args.elementwise_swap_scheme == "all":

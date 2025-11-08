@@ -252,16 +252,16 @@ def get_trainer(args):
     # trainer.add_callback(vram_breakdown_callback)
 
 
-    dump_cb = PerModuleGradDumper(
-        out_dir=f"{training_args.output_dir}/grad_dumps",
-        model=model,
-        capture_steps=100,
-        include_bias=True,
-        also_embeddings=False,  # set True if you also want embeddings/lm_head
-        # weight_out_dir=weight_out_dir,
-    )
+    # dump_cb = PerModuleGradDumper(
+    #     out_dir=f"{training_args.output_dir}/grad_dumps",
+    #     model=model,
+    #     capture_steps=100,
+    #     include_bias=True,
+    #     also_embeddings=False,  # set True if you also want embeddings/lm_head
+    #     # weight_out_dir=weight_out_dir,
+    # )
 
-    trainer.add_callback(dump_cb)
+    # trainer.add_callback(dump_cb)
 
 
 
