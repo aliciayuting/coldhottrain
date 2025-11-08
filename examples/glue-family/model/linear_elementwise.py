@@ -189,7 +189,7 @@ class LinearElementwise(nn.Module):
         new_weight_indices: torch.Tensor,
         new_bias_indices: Optional[torch.Tensor] = None,
         optimizer: Optional[torch.optim.Optimizer] = None,
-        keep_state: bool = True,
+        keep_state: int = 0,
     ) -> None:
         """
         Replace the set of trainable weight/bias slots while preserving optimizer state when possible.
@@ -237,7 +237,7 @@ class LinearElementwise(nn.Module):
                 raise ValueError("new_bias_indices contains duplicate entries")
 
         weight_state_old_pos = weight_state_new_pos = None
-        if optimizer is not None and keep_state and self.vals.numel() > 0:
+        if optimizer is not None and examples/glue-family/training/helper.py  and self.vals.numel() > 0:
             old_map = {int(idx): pos for pos, idx in enumerate(old_lin.detach().cpu().tolist())}
             new_list = new_lin.detach().cpu().tolist()
             keep_new_pos = []

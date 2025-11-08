@@ -250,7 +250,7 @@ def get_trainer(args):
 
 
     if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
-        hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters, elementwise_scheme="all", all_optimizer_states=all_optimizer_states, all_optimizer_states_name_mapping=all_optimizer_states_name_mapping) # TODO: double check if this would matter with linearcolwise
+        hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters, elementwise_scheme="all", all_optimizer_states=all_optimizer_states, all_optimizer_states_name_mapping=all_optimizer_states_name_mapping, keep_state=coldneuron_args.keep_state) # TODO: double check if this would matter with linearcolwise
         trainer.add_callback(hotswap_cb)
 
 

@@ -14,12 +14,13 @@ def _is_main():
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
 
 class HotSwapCallback(TrainerCallback):
-    def __init__(self, swap_iters=100, elementwise_scheme= "all", all_optimizer_states=None, all_optimizer_states_name_mapping=None):
+    def __init__(self, swap_iters=100, elementwise_scheme= "all", all_optimizer_states=None, all_optimizer_states_name_mapping=None, keep_state=0):
         self.model = None  # will be set on first call
         self.swap_iters = swap_iters
         self.elementwise_scheme = elementwise_scheme
         self.all_optimizer_states = all_optimizer_states
         self.all_optimizer_states_name_mapping = all_optimizer_states_name_mapping
+        self.keep_state = keep_state
 
     def _unwrap_optimizer(self, opt):
         # Walk through any wrappers until we hit the real torch optimizer
@@ -74,7 +75,7 @@ class HotSwapCallback(TrainerCallback):
                             new_hot_idx = make_hot_idx_n(out_features=mod.out_features, n=mod.hot_idx.numel(), device=mod.W_hot.device)
                             assert new_hot_idx.shape == mod.hot_idx.shape
                             #new_hot_idx = mod.hot_idx.clone()
-                            mod.switch_hot(new_hot_idx=new_hot_idx, keep_state=True, all_optimizer_states=self.all_optimizer_states, all_optimizer_states_name_mapping=self.all_optimizer_states_name_mapping, optimizer=optimizer, print_info=print_info)
+                            mod.switch_hot(new_hot_idx=new_hot_idx, keep_state=self.keep_state, all_optimizer_states=self.all_optimizer_states, all_optimizer_states_name_mapping=self.all_optimizer_states_name_mapping, optimizer=optimizer, print_info=print_info)
                             mod._assert_optimizer_has(optimizer)
 
                             # print(f"\t\t")

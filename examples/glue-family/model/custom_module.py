@@ -505,7 +505,7 @@ class LinearColWise(nn.Module):
     def switch_hot(self,
                    new_hot_idx: torch.Tensor,
                    optimizer: torch.optim.Optimizer | None = None,
-                   keep_state: bool = True,
+                   keep_state: int = 0,
                    all_optimizer_states: dict | None = None,
                    all_optimizer_states_name_mapping: dict | None = None,
                    print_info: bool = False):
@@ -640,7 +640,7 @@ class LinearColWise(nn.Module):
         #             new_rows_from_old=new_rows_from_old,
         #             old_rows_for_those=old_rows_for_those
         #         )
-        if optimizer is not None and keep_state:
+        if optimizer is not None and keep_state > 0:
             def _remap_state_inplace(param: torch.nn.Parameter,
                                     old_rows: torch.Tensor,
                                     new_rows: torch.Tensor):
@@ -723,13 +723,14 @@ class LinearColWise(nn.Module):
 
 
 
-
-            # _remap_state_inplace(self.W_hot,  old_rows_for_those, new_rows_from_old)
-            # print("Syncing optimizer state for weight...")
-            sync_optimizer_state(self.W_hot)
-            if self.has_bias:
-                # _remap_state_inplace(self.b_hot, old_rows_for_those, new_rows_from_old)
-                sync_optimizer_state(self.b_hot)
+            if keep_state == 1:
+                _remap_state_inplace(self.W_hot,  old_rows_for_those, new_rows_from_old)
+                if self.has_bias:
+                    _remap_state_inplace(self.b_hot, old_rows_for_those, new_rows_from_old)
+            elif keep_state == 2:
+                sync_optimizer_state(self.W_hot)
+                if self.has_bias:
+                    sync_optimizer_state(self.b_hot)
 
         
 

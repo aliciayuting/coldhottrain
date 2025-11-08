@@ -364,6 +364,10 @@ class ColdNeuronArguments:
         default="auto", metadata={"help": "Elementwise swap scheme: auto, neuron, all, input"}
     )
 
+    keep_state: int = field(
+        default=0, metadata={"help": "Whether to keep optimizer state during hotswap: 0 - no, 1 - remap, 2 - sync"}
+    )
+
 
 
 
