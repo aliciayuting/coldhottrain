@@ -253,7 +253,7 @@ class LinearElementwise(nn.Module):
                 raise ValueError("new_bias_indices contains duplicate entries")
 
         weight_state_old_pos = weight_state_new_pos = None
-        if optimizer is not None and examples/glue-family/training/helper.py  and self.vals.numel() > 0:
+        if optimizer is not None and self.vals.numel() > 0:
             old_map = {int(idx): pos for pos, idx in enumerate(old_lin.detach().cpu().tolist())}
             new_list = new_lin.detach().cpu().tolist()
             keep_new_pos = []

@@ -85,7 +85,7 @@ class HotSwapCallback(TrainerCallback):
 
 
                     if isinstance(mod, LinearElementwise):
-                        assert False, "Elementwise hotswap not tested recently"
+                        #assert False, "Elementwise hotswap not tested recently"
                         if self.elementwise_scheme == "neuron":
                             new_hot_idx = make_hot_idx_n(out_features=mod.out_features, n=mod.bias_idx.numel(), device=mod.vals.device)
                             w_idx, b_idx = build_elementwise_indices_from_hotidx(
@@ -125,6 +125,7 @@ class HotSwapCallback(TrainerCallback):
                                 optimizer=optimizer,
                             )
                         elif self.elementwise_scheme == "preselect":
+                            print("Elementwise preselect does not hot swap")
                             continue
                         elif self.elementwise_scheme == "smartswap":
                             w_idx = mod.metadata.get("hot_w", None)

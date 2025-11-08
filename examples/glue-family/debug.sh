@@ -17,7 +17,7 @@ else
     RUN_NAME=$MODEL_NAME-fp-seed$SEED
 fi
 
-# RUN_NAME="DEBUG"
+RUN_NAME="DEBUG"
 
 OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
 LOGGING_PATH=$OUTPUT_BASE/tensorboard_logs/$RUN_NAME
@@ -51,8 +51,12 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --load_best_model_at_end True \
     --metric_for_best_model eval_loss \
     --greater_is_better false \
-    --train_adapter True \
-    --adapter_config lora \
+    --skip_ratio 0.8 \
+    --elementwise_linear true \
+    --elementwise_swap_scheme smartswap \
+    --change_iters 100 \
+    --keep_state 1 \
+    --preselect_file /share/desa/nfs02/cold/test/preselect_grads.json
 
 
     # --train_adapter True \
