@@ -113,7 +113,7 @@ def get_model(
             target_modules = ["query", "value"]
 
             preselect_lookup = {}
-            if coldneuron_args.elementwise_swap_scheme == "preselect" or coldneuron_args.elementwise_swap_scheme == "smartswap":
+            if (coldneuron_args.elementwise_swap_scheme == "preselect" or coldneuron_args.elementwise_swap_scheme == "smartswap") and coldneuron_args.elementwise_linear:
                 # TODO: sync with jamal about how to modify this
                 if not coldneuron_args.preselect_file:
                     raise ValueError("ELEMENTWISE_SWAP_SCHEME='preselect' requires --preselect-file to be specified")
@@ -132,6 +132,8 @@ def get_model(
                 aggregated = {}
                 for raw_name, info in raw_layers.items():
                     short_name = os.path.basename(raw_name)
+                    if True:
+                        print("short_name:", short_name)
                     entry = aggregated.setdefault(
                         short_name,
                         {"weights": set(), "bias": set(), "shape": None},
@@ -148,6 +150,7 @@ def get_model(
                         entry["weights"].add((int(pair[0]), int(pair[1])))
                     for idx in info.get("train_bias_indices", []):
                         entry["bias"].add(int(idx))
+                
 
                 for short_name, entry in aggregated.items():
                     weights_sorted = sorted(entry["weights"])
@@ -181,6 +184,7 @@ def get_model(
                 for name, linear in layer.named_modules():
                     # if any(tm in name for tm in target_modules):
                     proj_name = is_module_to_replace(name, target_modules)
+                    print("proj_name:", proj_name)
                     if proj_name is not None:
                         parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
                         attr_name = name.split('.')[-1]
@@ -195,6 +199,11 @@ def get_model(
                         
                         in_features = linear.in_features
                         out_features = linear.out_features
+                        preselect_proj_name = ""
+                        if proj_name == "query":
+                            preselect_proj_name = "q_proj"
+                        elif proj_name == "value":
+                            preselect_proj_name = "v_proj"
                         assert isinstance(out_features, int) and isinstance(in_features, int)
                         if not coldneuron_args.elementwise_linear: # linear colwise replacement
                             hot_idx = make_hot_idx(out_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
@@ -211,10 +220,10 @@ def get_model(
                                 hot_idx = make_hot_idx(in_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
                                 wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)
                             elif coldneuron_args.elementwise_swap_scheme == "preselect":
-                                w_idx, b_idx = build_elementwise_indices_from_preselected(layer_idx, "atten", proj_name, linear, preselect_lookup)
+                                w_idx, b_idx = build_elementwise_indices_from_preselected(layer_idx, "self_attn", preselect_proj_name, linear, preselect_lookup)
                                 wrapped = replace_linear_with_elementwise_preselected(linear, w_idx, b_idx)
                             elif coldneuron_args.elementwise_swap_scheme == "smartswap":
-                                w_idx, b_idx = build_elementwise_indices_from_preselected(layer_idx, "atten", proj_name, linear, preselect_lookup)
+                                w_idx, b_idx = build_elementwise_indices_from_preselected(layer_idx, "self_attn", preselect_proj_name, linear, preselect_lookup)
                                 #TODO: kind of cheating to do it this way because some models may not have bias, but fine for now
                                 hot_neurons = b_idx
                                 saved_w = w_idx
