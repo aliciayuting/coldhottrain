@@ -184,7 +184,7 @@ def get_model(
                 for name, linear in layer.named_modules():
                     # if any(tm in name for tm in target_modules):
                     proj_name = is_module_to_replace(name, target_modules)
-                    print("proj_name:", proj_name)
+                    # print("proj_name:", proj_name)
                     if proj_name is not None:
                         parent_name = '.'.join(name.split('.')[:-1]) if '.' in name else ''
                         attr_name = name.split('.')[-1]

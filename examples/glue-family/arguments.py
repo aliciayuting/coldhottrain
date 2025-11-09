@@ -372,6 +372,14 @@ class ColdNeuronArguments:
         default=None, metadata={"help": "Path to preselect file for elementwise swapping."}
     )
 
+    probe_memory_usage: bool = field(
+        default=False, metadata={"help": "Whether to probe memory usage."}
+    )
+
+    dump_grads: bool = field(
+        default=False, metadata={"help": "Whether to dump gradients for analysis."}
+    )
+
 
 
 

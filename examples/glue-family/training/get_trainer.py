@@ -239,29 +239,22 @@ def get_trainer(args):
 
 
 
+    if coldneuron_args.probe_memory_usage:
+        vram_breakdown_callback = VramBreakdownCallback()
+        trainer.add_callback(vram_breakdown_callback)
 
 
+    if coldneuron_args.dump_grads:
+        dump_cb = PerModuleGradDumper(
+            out_dir=f"{training_args.output_dir}/grad_dumps",
+            model=model,
+            capture_steps=100,
+            include_bias=True,
+            also_embeddings=False,  # set True if you also want embeddings/lm_head
+            # weight_out_dir=weight_out_dir,
+        )
 
-
-
-
-
-
-
-    # vram_breakdown_callback = VramBreakdownCallback()
-    # trainer.add_callback(vram_breakdown_callback)
-
-
-    # dump_cb = PerModuleGradDumper(
-    #     out_dir=f"{training_args.output_dir}/grad_dumps",
-    #     model=model,
-    #     capture_steps=100,
-    #     include_bias=True,
-    #     also_embeddings=False,  # set True if you also want embeddings/lm_head
-    #     # weight_out_dir=weight_out_dir,
-    # )
-
-    # trainer.add_callback(dump_cb)
+        trainer.add_callback(dump_cb)
 
 
 
@@ -273,32 +266,6 @@ def get_trainer(args):
                                      keep_state=coldneuron_args.keep_state) # TODO: double check if this would matter with linearcolwise
         trainer.add_callback(hotswap_cb)
 
-
-
-
-
-    # trainer.add_callback(DebugCallback(swap_iters=1, elementwise_scheme="all"))
-
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         print(f"name: {name} shape: {param.shape} id: {id(param)}")
-
-    # opt = trainer.optimizer
-    # print(f"optimizer type: {type(opt)}")
-    # for i, g in enumerate(opt.param_groups):
-    #     print(f"Group {i}:")
-    #     for k, v in g.items():
-    #         # if k != "params":
-    #         # if True:
-    #         #     print(f"\tkey: {k} shape {v.shape} device:{ v.device if hasattr(v, 'device') else 'N/A' }")
-    #         if v.__class__ != list:
-    #             print(f"\tkey: {k} value {v}")
-    #         else:
-    #             for e in v:
-    #                 if hasattr(e, 'shape'):
-    #                     print(f"\tkey: {k} id: {id(e)} shape {e.shape} device:{ e.device if hasattr(e, 'device') else 'N/A' }")
-    #                 else:
-    #                     print(f"\tkey: {k} no shape")
 
 
     # exit()
