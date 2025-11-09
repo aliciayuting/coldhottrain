@@ -20,6 +20,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing layer gradient .npy files.",
     )
     parser.add_argument(
+        "--model",
+        default='qwen',
+        help="model type",
+    )
+    parser.add_argument(
         "--percent",
         type=float,
         default=5.0,
