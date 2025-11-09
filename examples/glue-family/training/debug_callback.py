@@ -51,17 +51,14 @@ class DebugCallback(TrainerCallback):
         if optimizer is None:
             logger.warning("no optimizer :(")
             return
+        
+
         optimizer = self._unwrap_optimizer(optimizer)
-        #print(f"settings {optimizer.foreach} {optimizer.capturable} {optimizer.fused}")
-        print("CUDA bytes in optimizer state:", self.bytes_on_cuda_state(optimizer))
-        optimizer.zero_grad(set_to_none=True)
 
-        logger.info(f"[hotswap on_optimizer_step] global_step={state.global_step}")
-
-        for param, state in optimizer.state.items():
-            print(f"--- param: {id(param)} shape: {param.shape} ---")
-            for skey, sval in state.items():
-                if torch.is_tensor(sval):
-                    print(f"\tstate key: {skey} shape: {sval.shape} device:{sval.device} dtype: {sval.dtype}")
-                else:
-                    print(f"\tstate key: {skey} value: {sval} type: {type(sval)}")
+        # print out gradients
+        for n, p in self.model.named_parameters():
+            if p.grad is not None:
+                grad_norm = p.grad.data.norm(2).item()
+                print(f"Grad norm for {n}: {grad_norm}")
+            else:
+                print(f"No grad for {n}")

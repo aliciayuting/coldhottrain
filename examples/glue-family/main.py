@@ -161,14 +161,7 @@ def main() -> None:
     trainer, model, dataset, _ = get_trainer(args=args)
     # for m in model.modules():
     #     print(type(m), m)
-    #exit(0)
-
-    if coldneuron_args.my_debug:
-        print("***** Debug Mode Activated *****")
-        return
-
-
-    
+    #exit(0)    
 
     if training_args.do_train and coldneuron_args.cold_do_train:
         # Log a few random samples from the training set:

@@ -34,6 +34,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
 from transformers import get_linear_schedule_with_warmup
 import torch
+from training.utils import optimizer_info
 
 
 from training.grad_dump_callback import PerModuleGradDumper
@@ -144,7 +145,10 @@ def get_trainer(args):
             tokenizer=tokenizer,
             data_collator=dataset.data_collator,
             callbacks=early_stopping_callback,
-            optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs),
+            # optimizer_cls_and_kwargs=(
+            #     torch.optim.SGD,
+            #     {"lr": training_args.learning_rate}
+            # ),
         )
         # trainer.create_optimizer_and_scheduler(num_training_steps=33135)
         trainer.create_optimizer()
@@ -189,55 +193,19 @@ def get_trainer(args):
             tokenizer=tokenizer,
             data_collator=dataset.data_collator,
             callbacks=early_stopping_callback,
-            # optimizers=( optim, lr_scheduler),
+            # optimizer_cls_and_kwargs=(
+            #     torch.optim.SGD,
+            #     {"lr": training_args.learning_rate, "momentum": 0.9}
+            # ),
         )
 
         # trainer.create_optimizer_and_scheduler(num_training_steps=33135)
         trainer.create_optimizer()
 
 
-    # get model hidden dimension
-    hidden_dim = model.config.hidden_size
-    # create a virtual optimizer states for all params
-    all_optimizer_states = dict() # param name to its optimizer state dict
-    all_optimizer_states_name_mapping = dict() # param id to param name
-    for name, param in model.named_parameters():
-        if "query" in name or "value" in name:
-            if "W_hot" in name:
-                all_optimizer_states[id(param)] = {
-                    "step": torch.tensor(0, device="cpu", dtype=torch.float32),
-                    "exp_avg": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
-                    "exp_avg_sq": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
-                }
-            elif "b_hot" in name:
-                all_optimizer_states[id(param)] = {
-                    "step": torch.tensor(0, device="cpu", dtype=torch.float32),
-                    "exp_avg": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
-                    "exp_avg_sq": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
-                }
-
-            all_optimizer_states_name_mapping[id(param)] = name
-
+    # print optimizer info
+    optimizer_info(model, trainer.optimizer)
     
-
-    # for param_id, state in all_optimizer_states.items():
-    #     print(f"--param name: {all_optimizer_states_name_mapping[param_id]} id: {param_id} --")
-    #     for skey, sval in state.items():
-    #         if torch.is_tensor(sval):
-    #             # print(f"\tstate key: {skey} shape: {sval.shape} device:{sval.device} dtype: {sval.dtype}")
-    #             all_zero = torch.all(sval == 0)
-    #             print(f"\tstate key: {skey} value: {sval} all_zero: {all_zero}")
-
-    #         else:
-    #             print(f"\tstate key: {skey} value: {sval}")
-
-    # hot_param_optimizer_states_mapping = dict() # param name to param id
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         hot_param_optimizer_states_mapping[name] = id(param)
-
-
-
 
     if coldneuron_args.probe_memory_usage:
         vram_breakdown_callback = VramBreakdownCallback()
@@ -259,12 +227,57 @@ def get_trainer(args):
 
 
     if coldneuron_args.skip_ratio > 0 and not coldneuron_args.use_masked_skipgradient:
+        # get model hidden dimension
+        hidden_dim = model.config.hidden_size
+        # create a virtual optimizer states for all params
+        all_optimizer_states = dict() # param name to its optimizer state dict
+        all_optimizer_states_name_mapping = dict() # param id to param name
+        for name, param in model.named_parameters():
+            if "query" in name or "value" in name:
+                if "W_hot" in name:
+                    all_optimizer_states[id(param)] = {
+                        "step": torch.tensor(0, device="cpu", dtype=torch.float32),
+                        "exp_avg": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
+                        "exp_avg_sq": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
+                    }
+                elif "b_hot" in name:
+                    all_optimizer_states[id(param)] = {
+                        "step": torch.tensor(0, device="cpu", dtype=torch.float32),
+                        "exp_avg": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                        "exp_avg_sq": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                    }
+
+                all_optimizer_states_name_mapping[id(param)] = name
+
+    
+
+        # for param_id, state in all_optimizer_states.items():
+        #     print(f"--param name: {all_optimizer_states_name_mapping[param_id]} id: {param_id} --")
+        #     for skey, sval in state.items():
+        #         if torch.is_tensor(sval):
+        #             # print(f"\tstate key: {skey} shape: {sval.shape} device:{sval.device} dtype: {sval.dtype}")
+        #             all_zero = torch.all(sval == 0)
+        #             print(f"\tstate key: {skey} value: {sval} all_zero: {all_zero}")
+
+        #         else:
+        #             print(f"\tstate key: {skey} value: {sval}")
+
+        # hot_param_optimizer_states_mapping = dict() # param name to param id
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         hot_param_optimizer_states_mapping[name] = id(param)
+
+
         hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters,
                                      elementwise_scheme=coldneuron_args.elementwise_swap_scheme,
                                      all_optimizer_states=all_optimizer_states,
                                      all_optimizer_states_name_mapping=all_optimizer_states_name_mapping,
                                      keep_state=coldneuron_args.keep_state) # TODO: double check if this would matter with linearcolwise
         trainer.add_callback(hotswap_cb)
+
+    # # debug callback
+    # debug_cb = DebugCallback()
+    # trainer.add_callback(debug_cb)
 
 
 
