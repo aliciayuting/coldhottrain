@@ -146,7 +146,7 @@ def get_trainer(args):
                 callbacks=early_stopping_callback,
                 # optimizer_cls_and_kwargs=(
                 #     PlainAdamW,
-                #     {"lr": training_args.learning_rate}
+                #     {"lr": training_args.learning_rate, "eps": 1e-8}
                 # ),
             )
             trainer.create_optimizer()
