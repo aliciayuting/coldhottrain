@@ -150,6 +150,13 @@ def get_trainer(args):
                 # ),
             )
             trainer.create_optimizer()
+
+            hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters,
+                                     elementwise_scheme=coldneuron_args.elementwise_swap_scheme,
+                                     all_optimizer_states=all_optimizer_states,
+                                     all_optimizer_states_name_mapping=all_optimizer_states_name_mapping,
+                                     keep_state=coldneuron_args.keep_state) # TODO: double check if this would matter with linearcolwise
+            trainer.add_callback(hotswap_cb)
         else:
             trainer = trainer_cls(
                 model=model,
@@ -280,13 +287,6 @@ def get_trainer(args):
         #     if param.requires_grad:
         #         hot_param_optimizer_states_mapping[name] = id(param)
 
-
-        hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters,
-                                     elementwise_scheme=coldneuron_args.elementwise_swap_scheme,
-                                     all_optimizer_states=all_optimizer_states,
-                                     all_optimizer_states_name_mapping=all_optimizer_states_name_mapping,
-                                     keep_state=coldneuron_args.keep_state) # TODO: double check if this would matter with linearcolwise
-        trainer.add_callback(hotswap_cb)
 
     # # debug callback
     # debug_cb = DebugCallback()
