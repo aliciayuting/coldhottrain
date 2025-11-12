@@ -85,7 +85,16 @@ def get_model(
         ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
     )
 
-    if adapter_args.train_adapter:
+
+    if coldneuron_args.full_parameter_q_v_classifier:
+        assert coldneuron_args.skip_ratio == 0, "Cannot use both full_parameter_q_v_classifier and ColdNeurons at the same time."
+        assert not adapter_args.train_adapter, "Cannot use both full_parameter_q_v_classifier and LoRA at the same time."
+        print("***** Using full parameter for q,v and classifier *****")
+        model.enable_input_require_grads()
+        for name, param in model.named_parameters():
+            if not ("query" in name or "value" in name or "classifier" in name):
+                param.requires_grad = False
+    elif adapter_args.train_adapter:
         assert coldneuron_args.skip_ratio == 0, "Cannot use both LoRA and ColdNeurons at the same time."
         print("***** Using LoRA *****")
         model.enable_input_require_grads()

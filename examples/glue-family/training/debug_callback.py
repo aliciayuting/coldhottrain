@@ -55,10 +55,12 @@ class DebugCallback(TrainerCallback):
 
         optimizer = self._unwrap_optimizer(optimizer)
 
-        # print out gradients
-        for n, p in self.model.named_parameters():
-            if p.grad is not None:
-                grad_norm = p.grad.data.norm(2).item()
-                print(f"Grad norm for {n}: {grad_norm}")
-            else:
-                print(f"No grad for {n}")
+        # # print out gradients
+        # for n, p in self.model.named_parameters():
+        #     if p.grad is not None:
+        #         grad_norm = p.grad.data.norm(2).item()
+        #         print(f"Grad norm for {n}: {grad_norm}")
+        #     else:
+        #         print(f"No grad for {n}")
+
+

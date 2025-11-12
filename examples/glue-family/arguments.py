@@ -381,6 +381,11 @@ class ColdNeuronArguments:
     )
 
 
+    full_parameter_q_v_classifier: bool = field(
+        default=False, metadata={"help": "Whether to only train q,v, classifier in fp."}
+    )
+
+
 
 
 

@@ -35,11 +35,9 @@ from torch.optim.lr_scheduler import LinearLR
 from transformers import get_linear_schedule_with_warmup
 import torch
 from training.utils import optimizer_info
-
-
 from training.grad_dump_callback import PerModuleGradDumper
-
 from training.hotswap import HotSwapCallback
+from training.customized_adamw import PlainAdamW
 
 logger = logging.getLogger(__name__)
 
@@ -135,26 +133,36 @@ def get_trainer(args):
             "lr": training_args.learning_rate,
             "fused": True,
         }
+
+        if not coldneuron_args.use_masked_skipgradient:
+            trainer = trainer_cls(
+                model=model,
+                args=training_args,
+                train_dataset=dataset.train_dataset if training_args.do_train else None,
+                eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
+                compute_metrics=dataset.compute_metrics,
+                tokenizer=tokenizer,
+                data_collator=dataset.data_collator,
+                callbacks=early_stopping_callback,
+                # optimizer_cls_and_kwargs=(
+                #     PlainAdamW,
+                #     {"lr": training_args.learning_rate}
+                # ),
+            )
+            trainer.create_optimizer()
+        else:
+            trainer = trainer_cls(
+                model=model,
+                args=training_args,
+                train_dataset=dataset.train_dataset if training_args.do_train else None,
+                eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
+                compute_metrics=dataset.compute_metrics,
+                tokenizer=tokenizer,
+                data_collator=dataset.data_collator,
+                callbacks=early_stopping_callback,
+                optimizer_cls_and_kwargs=(MaskedAdamW, opt_kwargs)
+            )
         
-        trainer = trainer_cls(
-            model=model,
-            args=training_args,
-            train_dataset=dataset.train_dataset if training_args.do_train else None,
-            eval_dataset=dataset.eval_dataset if training_args.do_eval else None,
-            compute_metrics=dataset.compute_metrics,
-            tokenizer=tokenizer,
-            data_collator=dataset.data_collator,
-            callbacks=early_stopping_callback,
-            # optimizer_cls_and_kwargs=(
-            #     torch.optim.SGD,
-            #     {"lr": training_args.learning_rate}
-            # ),
-        )
-        # trainer.create_optimizer_and_scheduler(num_training_steps=33135)
-        trainer.create_optimizer()
-
-
-        if coldneuron_args.use_masked_skipgradient:
             print("**** Using Masked SkipGradient Callback ****")
             skipgradient_cb = SkipGradientCallback(
                 model=model,
@@ -165,6 +173,8 @@ def get_trainer(args):
                 change_random_every_iters=coldneuron_args.change_iters,
             )
             trainer.add_callback(skipgradient_cb)
+
+            trainer.create_optimizer()
 
     else:
 
@@ -194,8 +204,8 @@ def get_trainer(args):
             data_collator=dataset.data_collator,
             callbacks=early_stopping_callback,
             # optimizer_cls_and_kwargs=(
-            #     torch.optim.SGD,
-            #     {"lr": training_args.learning_rate, "momentum": 0.9}
+            #     PlainAdamW,
+            #     {"lr": training_args.learning_rate}
             # ),
         )
 
@@ -206,7 +216,6 @@ def get_trainer(args):
     # print optimizer info
     optimizer_info(model, trainer.optimizer)
     
-
     if coldneuron_args.probe_memory_usage:
         vram_breakdown_callback = VramBreakdownCallback()
         trainer.add_callback(vram_breakdown_callback)
@@ -233,21 +242,25 @@ def get_trainer(args):
         all_optimizer_states = dict() # param name to its optimizer state dict
         all_optimizer_states_name_mapping = dict() # param id to param name
         for name, param in model.named_parameters():
-            if "query" in name or "value" in name:
                 if "W_hot" in name:
+                # if "weight" in name:
                     all_optimizer_states[id(param)] = {
-                        "step": torch.tensor(0, device="cpu", dtype=torch.float32),
+                        "step": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
                         "exp_avg": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
                         "exp_avg_sq": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
                     }
                 elif "b_hot" in name:
+                # elif "bias" in name:
                     all_optimizer_states[id(param)] = {
-                        "step": torch.tensor(0, device="cpu", dtype=torch.float32),
+                        "step": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
                         "exp_avg": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
                         "exp_avg_sq": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
                     }
 
                 all_optimizer_states_name_mapping[id(param)] = name
+        
+        if (isinstance(trainer.optimizer, PlainAdamW)):
+            trainer.optimizer.set_states(all_optimizer_states, all_optimizer_states_name_mapping)
 
     
 

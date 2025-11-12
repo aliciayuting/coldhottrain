@@ -666,7 +666,7 @@ class LinearColWise(nn.Module):
                     if src_rows is not None and new_rows_d.numel():
                         v.index_copy_(0, new_rows_d, src_rows)
 
-            def sync_optimizer_state(param: torch.nn.Parameter):
+            def sync_optimizer_state(param: torch.nn.Parameter, print_info: bool = False):
                 """Ensure optimizer state for param is on CPU in all_optimizer_states."""
                 assert id(param) in all_optimizer_states, f"{id(param)} not in all_optimizer_states"
                 hot_states = optimizer.state.get(param, None)
@@ -674,19 +674,19 @@ class LinearColWise(nn.Module):
                     return
                 # copy the current hot states to all_optimizer_states
                 for k, v in list(hot_states.items()):
-                    if k == 'step':
-                        continue
+                    # if k == 'step':
+                    if False:
                         # copy the value to the all_optimizer_states directly
                         all_optimizer_states[id(param)][k].copy_(v)
                     else:
-                        assert k == 'exp_avg' or k == 'exp_avg_sq', f"Unexpected optimizer state key {k}"
+                        assert  k == "step" or k == 'exp_avg' or k == 'exp_avg_sq', f"Unexpected optimizer state key {k}"
 
 
-                        if print_info and k == "exp_avg":
+                        if print_info and k == "step":
                             print(f"\t### self.current_hot_idx: {self.current_hot_idx.tolist()}")
                             for idx, current_hot in enumerate(self.current_hot_idx.tolist()):
-                                row_sum = v[idx].sum().item()
-                                print(f"\t\t### before copying: {all_optimizer_states_name_mapping[id(param)]} row {current_hot} sum: {row_sum} dtype: {v.dtype}")
+                                # row_sum = v[idx].sum().item()
+                                print(f"\t\t### before copying: {all_optimizer_states_name_mapping[id(param)]} row {current_hot} value: {v[idx].item()}")
 
                         assert self.current_hot_idx.device == torch.device('cpu'), "new_hot_idx_cpu must be on CPU"
 
@@ -697,12 +697,13 @@ class LinearColWise(nn.Module):
                 
                 # copy the new_hot_idx states from all_optimizer_states to optimizer.state
                 for k, v in list(hot_states.items()):
-                    if k == 'step':
+                    # if k == 'step':
+                    if False:
                         continue
                         # copy the value from all_optimizer_states directly
                         v.copy_(all_optimizer_states[id(param)][k])
                     else:
-                        assert k == 'exp_avg' or k == 'exp_avg_sq', f"Unexpected optimizer state key {k}"
+                        assert k == "step" or k == 'exp_avg' or k == 'exp_avg_sq', f"Unexpected optimizer state key {k}"
 
 
                         assert len(new_hot_idx_cpu) == len(self.current_hot_idx), "new_hot_idx_cpu and self.current_hot_idx must have the same length"
@@ -715,11 +716,14 @@ class LinearColWise(nn.Module):
                         # print(f"Restored optimizer state for {all_optimizer_states_name_mapping[id(param)]}; hot rows: {new_hot_idx_cpu.tolist()}")
 
 
-                        if print_info and k == "exp_avg":
+                        if print_info and k == "step":
                             print(f"\t### new_hot_idx_cpu: {new_hot_idx_cpu.tolist()}")
+                            # get the idx that stays hot
+                            stay_hot_idx = set(self.current_hot_idx.tolist()).intersection(set(new_hot_idx_cpu.tolist()))
+                            print(f"\t### stay_hot_idx: {sorted(stay_hot_idx)}")
                             for idx, current_hot in enumerate(new_hot_idx_cpu.tolist()):
-                                row_sum = v[idx].sum().item()
-                                print(f"\t\t### after copying: {all_optimizer_states_name_mapping[id(param)]} row {current_hot} sum: {row_sum}")
+                                # row_sum = v[idx].sum().item()
+                                print(f"\t\t### after copying: {all_optimizer_states_name_mapping[id(param)]} row {current_hot} value: {v[idx].item()}")
 
 
 
@@ -728,9 +732,9 @@ class LinearColWise(nn.Module):
                 if self.has_bias:
                     _remap_state_inplace(self.b_hot, old_rows_for_those, new_rows_from_old)
             elif keep_state == 2:
-                sync_optimizer_state(self.W_hot)
+                sync_optimizer_state(self.W_hot, print_info=print_info)
                 if self.has_bias:
-                    sync_optimizer_state(self.b_hot)
+                    sync_optimizer_state(self.b_hot, False)
 
         
 

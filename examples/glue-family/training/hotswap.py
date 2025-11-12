@@ -45,6 +45,7 @@ class HotSwapCallback(TrainerCallback):
     def on_optimizer_step(self, args, state, control, **kwargs):
         if state.global_step % self.swap_iters != 0 or state.global_step <= 0:
             return
+        print(f"!!! HOTSWAP CALLBACK at step {state.global_step}")
         wrapped = kwargs.get("model")
         if wrapped is None:
             logger.warning("HotSwapCallback: model not found in kwargs")
@@ -145,3 +146,19 @@ class HotSwapCallback(TrainerCallback):
         verify_weights_across_ranks(self.model)
             # for g in optimizer.param_groups:
             #     g['params'] = list(g['params'])  # reassign to break potential cached views
+
+
+        
+        for _, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            name = self.all_optimizer_states_name_mapping[(id(param))]
+            if name == "roberta.encoder.layer.0.attention.self.query.W_hot":
+                state = optimizer.state[param]
+                step = state.get("step", None)
+                print(f"After hotswap, step for {name}: {step}")
+
+
+        # print("!!!!! NEW iteration\n\n\n\n\n")
+
+
