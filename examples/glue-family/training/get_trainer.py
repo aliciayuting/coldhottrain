@@ -151,12 +151,39 @@ def get_trainer(args):
             )
             trainer.create_optimizer()
 
+
+            hidden_dim = model.config.hidden_size
+            # create a virtual optimizer states for all params
+            all_optimizer_states = dict() # param name to its optimizer state dict
+            all_optimizer_states_name_mapping = dict() # param id to param name
+            for name, param in model.named_parameters():
+                    if "W_hot" in name:
+                    # if "weight" in name:
+                        all_optimizer_states[id(param)] = {
+                            "step": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                            "exp_avg": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
+                            "exp_avg_sq": torch.zeros((hidden_dim, hidden_dim), device="cpu", dtype=torch.float32),
+                        }
+                    elif "b_hot" in name:
+                    # elif "bias" in name:
+                        all_optimizer_states[id(param)] = {
+                            "step": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                            "exp_avg": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                            "exp_avg_sq": torch.zeros((hidden_dim,), device="cpu", dtype=torch.float32),
+                        }
+
+                    all_optimizer_states_name_mapping[id(param)] = name
+
             hotswap_cb = HotSwapCallback(swap_iters=coldneuron_args.change_iters,
-                                     elementwise_scheme=coldneuron_args.elementwise_swap_scheme,
-                                     all_optimizer_states=all_optimizer_states,
-                                     all_optimizer_states_name_mapping=all_optimizer_states_name_mapping,
-                                     keep_state=coldneuron_args.keep_state) # TODO: double check if this would matter with linearcolwise
+                                        elementwise_scheme=coldneuron_args.elementwise_swap_scheme,
+                                        all_optimizer_states=all_optimizer_states,
+                                        all_optimizer_states_name_mapping=all_optimizer_states_name_mapping,
+                                        keep_state=coldneuron_args.keep_state) # TODO: double check if this would matter with linearcolwise
             trainer.add_callback(hotswap_cb)
+
+            if (isinstance(trainer.optimizer, PlainAdamW)):
+                trainer.optimizer.set_states(all_optimizer_states, all_optimizer_states_name_mapping)
+            
         else:
             trainer = trainer_cls(
                 model=model,
