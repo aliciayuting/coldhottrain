@@ -1,5 +1,6 @@
 # TASK=mnli
 TASK=$1
+RUN_NAME_APPEND=fused-false
 MODEL_NAME=roberta-base
 SEED=0
 # SKIP_RATIO=0.92
@@ -24,16 +25,16 @@ if [ "$USE_LORA" = true ] ; then
 elif (( $(echo "$SKIP_RATIO > 0" | bc -l) )); then
     RUN_NAME=$MODEL_NAME-skipRatio$SKIP_RATIO-changeIters$CHANGE_ITERS-seed$SEED-lr$LR-bs$BATCH_SIZE-keep$KEEP_STATE
     if [ "$USE_ELEMENTWISE" = true ] ; then
-        RUN_NAME=$RUN_NAME-$SCHEME
+        RUN_NAME=$RUN_NAME-elemwise-$SCHEME-epochs$EPOCH
     else
-        RUN_NAME=$RUN_NAME-colwise-randomswap-use_masked_skipgradient
+        RUN_NAME=$RUN_NAME-colwise-use_masked_skipgradient-randomswap-epochs$EPOCH
     fi
 else
     RUN_NAME=$MODEL_NAME-fp-seed$SEED-lr$LR-bs$BATCH_SIZE-qvclassifier
 fi
 
-#RUN_NAME=$MODEL_NAME-fp-seed$SEED-lr$LR-bs$BATCH_SIZE-qvclassifier
-
+# RUN_NAME=$MODEL_NAME-fp-seed$SEED-lr$LR-bs$BATCH_SIZE-qvclassifier
+RUN_NAME=$RUN_NAME-$RUN_NAME_APPEND
 OUTPUT_PATH=$OUTPUT_BASE/runs/$RUN_NAME
 LOGGING_PATH=$OUTPUT_BASE/tensorboard_logs/$RUN_NAME
 
@@ -68,6 +69,4 @@ PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 python main.py \
     --gradient_checkpointing True \
     --skip_ratio $SKIP_RATIO \
     --change_iters $CHANGE_ITERS \
-    --elementwise_linear $USE_ELEMENTWISE \
-    --elementwise_swap_scheme $SCHEME \
-    --preselect_file $PRESELECT_FILE \
+    --use_masked_skipgradient True \

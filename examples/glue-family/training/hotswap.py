@@ -87,13 +87,15 @@ class HotSwapCallback(TrainerCallback):
 
                     if isinstance(mod, LinearElementwise):
                         #assert False, "Elementwise hotswap not tested recently"
-                        if self.elementwise_scheme == "neuron":
-                            new_hot_idx = make_hot_idx_n(out_features=mod.out_features, n=mod.bias_idx.numel(), device=mod.vals.device)
+                        if self.elementwise_scheme == "neuron" or self.elementwise_scheme == "neuron-with-bias":
+                            train_full_bias = self.elementwise_scheme == "neuron-with-bias"
+                            new_hot_idx = make_hot_idx_n(out_features=mod.out_features, n=mod.metadata.get("store_n", 0), device=mod.vals.device)
                             w_idx, b_idx = build_elementwise_indices_from_hotidx(
                                 out_features=mod.out_features,
                                 in_features=mod.in_features,
                                 hot_idx=new_hot_idx,
                                 device=mod.vals.device,
+                                train_full_bias=train_full_bias,
                             )
                             mod.hotswap(
                                 new_weight_indices=w_idx,

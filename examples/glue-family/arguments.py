@@ -380,6 +380,9 @@ class ColdNeuronArguments:
         default=False, metadata={"help": "Whether to dump gradients for analysis."}
     )
 
+    dump_grads_steps: int = field(
+        default=100, metadata={"help": "Dump gradients every these many steps."}
+    )
 
     full_parameter_q_v_classifier: bool = field(
         default=False, metadata={"help": "Whether to only train q,v, classifier in fp."}

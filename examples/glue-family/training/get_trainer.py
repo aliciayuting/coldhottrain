@@ -131,7 +131,7 @@ def get_trainer(args):
             "named_parameters": dict(model.named_parameters()),
             "freeze_state": "zero", 
             "lr": training_args.learning_rate,
-            "fused": True,
+            #"fused": True,
         }
 
         if not coldneuron_args.use_masked_skipgradient:
@@ -259,7 +259,7 @@ def get_trainer(args):
         dump_cb = PerModuleGradDumper(
             out_dir=f"{training_args.output_dir}/grad_dumps",
             model=model,
-            capture_steps=100,
+            capture_steps=coldneuron_args.dump_grads_steps,
             include_bias=True,
             also_embeddings=False,  # set True if you also want embeddings/lm_head
             # weight_out_dir=weight_out_dir,

@@ -22,6 +22,8 @@ class LinearElementwise(nn.Module):
     Effective weight = W_frozen (zeros at trainable slots) + sparse(vals at train_weight_indices)
     Effective bias   = b_frozen (zeros at trainable slots) + sparse(bias_vals at train_bias_indices)
     """
+
+
     def __init__(self, in_features, out_features,
                  train_weight_indices,
                  train_bias_indices: Optional[torch.Tensor] = None,

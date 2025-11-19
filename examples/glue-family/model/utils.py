@@ -225,6 +225,9 @@ def get_model(
                             elif coldneuron_args.elementwise_swap_scheme == "neuron":
                                 hot_idx = make_hot_idx(out_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
                                 wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx)
+                            elif coldneuron_args.elementwise_swap_scheme == "neuron-with-bias":
+                                hot_idx = make_hot_idx(out_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
+                                wrapped = replace_linear_with_elementwise_hotidx(linear, hot_idx, train_full_bias=True)
                             elif coldneuron_args.elementwise_swap_scheme == "input":
                                 hot_idx = make_hot_idx(in_features, frac=1-coldneuron_args.skip_ratio, device=linear.weight.device)
                                 wrapped = replace_linear_with_elementwise_hotidx_input_features(linear, hot_idx)

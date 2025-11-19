@@ -100,7 +100,7 @@ def get_non_trainable_indices(in_features, out_features: int, w, b) -> torch.Ten
     cold_b = all_b[~torch.isin(all_b, b)]
     print("Non-trainable bias indices:", cold_b)
 
-def build_elementwise_indices_from_hotidx(out_features: int, in_features: int, hot_idx: torch.Tensor, device=None):
+def build_elementwise_indices_from_hotidx(out_features: int, in_features: int, hot_idx: torch.Tensor, device=None, train_full_bias=False):
     device = hot_idx.device
 
     # If no rows are hot, return empty indices in the right shape/dtype
@@ -117,6 +117,8 @@ def build_elementwise_indices_from_hotidx(out_features: int, in_features: int, h
 
         # Bias indices are just the hot rows themselves
         b_idx = hot_idx.contiguous()
+        if train_full_bias:
+            b_idx = torch.arange(out_features, device=device)
     return w_idx, b_idx
 
 def build_elementwise_indices_from_hotidx_input_features(out_features: int, in_features: int, hot_idx: torch.Tensor, device=None):
@@ -183,14 +185,15 @@ def build_elementwise_indices_from_random(out_features: int, in_features: int, f
         train_bias_indices = None  # no trainable bias entries
     return train_weight_indices.to(device=device), train_bias_indices.to(device=device) if train_bias_indices is not None else train_bias_indices
 
-def replace_linear_with_elementwise_hotidx(mod: nn.Linear, hot_rows: torch.Tensor) -> "LinearElementwise":
+def replace_linear_with_elementwise_hotidx(mod: nn.Linear, hot_rows: torch.Tensor, train_full_bias=False) -> "LinearElementwise":
     
-    
+    n = hot_rows.numel()
     w_idx, b_idx = build_elementwise_indices_from_hotidx(
         out_features=mod.out_features,
         in_features=mod.in_features,
         hot_idx=hot_rows,
         device=mod.weight.device,
+        train_full_bias=train_full_bias,
     )
     #print(f"Replacing {mod._get_name()} with LinearElementwise: {w_idx.size(0)} trainable weights, {b_idx.size(0)} trainable biases")
     #print(get_non_trainable_indices(mod.in_features, mod.out_features, w_idx, b_idx))
@@ -198,6 +201,7 @@ def replace_linear_with_elementwise_hotidx(mod: nn.Linear, hot_rows: torch.Tenso
         mod,
         train_weight_indices=w_idx,
         train_bias_indices=b_idx,
+        metadata={"store_n": n},
         )
     return le.to(device=mod.weight.device, dtype=mod.weight.dtype)
 
